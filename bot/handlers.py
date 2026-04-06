@@ -340,8 +340,7 @@ async def on_usdt(message: Message, state: FSMContext):
     val = "" if message.text.strip() == "-" else message.text.strip()
     await state.update_data(usdt_amount=val)
     await message.answer(
-        "<b>Сумма в рублях</b> (напр. 1 350 000)
-"
+        "<b>Сумма в рублях</b> (напр. 1 350 000)\n"
         "Или <b>-</b> чтобы посчитать автоматически из USDT × курс:",
         parse_mode="HTML"
     )
@@ -352,8 +351,7 @@ async def on_rub(message: Message, state: FSMContext):
     val = "" if message.text.strip() == "-" else message.text.strip()
     await state.update_data(rub_amount=val)
     await message.answer(
-        "<b>Курс обмена</b> (напр. 80,88)
-"
+        "<b>Курс обмена</b> (напр. 80,88)\n"
         "Или <b>-</b> чтобы посчитать автоматически из RUB ÷ USDT:",
         parse_mode="HTML"
     )
@@ -379,12 +377,9 @@ async def on_rate(message: Message, state: FSMContext):
     )
     d = await state.get_data()
     await message.answer(
-        f"✅ Суммы:
-"
-        f"  USDT: <b>{d.get('usdt_amount')}</b>
-"
-        f"  RUB:  <b>{d.get('rub_amount')}</b>
-"
+        f"✅ Суммы:\n"
+        f"  USDT: <b>{d.get('usdt_amount')}</b>\n"
+        f"  RUB:  <b>{d.get('rub_amount')}</b>\n"
         f"  Курс: <b>{d.get('exchange_rate')}</b>",
         parse_mode="HTML"
     )

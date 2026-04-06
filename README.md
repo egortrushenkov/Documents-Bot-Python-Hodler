@@ -13,7 +13,7 @@ Telegram-бот для генерации закрывающих докумен�
 ### 3. Первичная установка на сервере
 ```bash
 # На VPS (Ubuntu):
-curl -fsSL https://raw.githubusercontent.com/YOUR_USER/deal-docs-bot/main/deploy.sh | bash
+curl -fsSL https://raw.githubusercontent.com/egortrushenkov/deal-docs-bot/main/deploy.sh | bash
 ```
 
 Скрипт установит Docker, склонирует репо и попросит заполнить `.env`.

@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    image: deal-docs-bot:latest
+    container_name: deal-docs-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

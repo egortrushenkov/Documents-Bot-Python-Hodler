@@ -1,7 +1,12 @@
 FROM python:3.11-slim
 
-# LibreOffice + Microsoft-совместимые шрифты (Calibri, Verdana и др.)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 1) Включаем contrib-репозиторий (нужен для ttf-mscorefonts-installer)
+RUN sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources
+
+# 2) Автоматически принимаем EULA перед установкой + ставим всё
+RUN apt-get update && \
+    echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections && \
+    apt-get install -y --no-install-recommends \
     libreoffice \
     libreoffice-writer \
     fonts-crosextra-carlito \

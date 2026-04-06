@@ -327,7 +327,9 @@ async def on_license(message: Message, state: FSMContext):
 
 async def _ask_deal_params(message: Message, state: FSMContext):
     await message.answer(
-        "💰 <b>Шаг 5 — Параметры сделки</b>\n\nВведите <b>сумму USDT</b>:",
+        "💰 <b>Шаг 5 — Параметры сделки</b>\n\n"
+        "Введите <b>сумму USDT</b> (напр. 14 000)\n"
+        "Или <b>-</b> чтобы посчитать из RUB ÷ курс:",
         parse_mode="HTML",
     )
     await state.set_state(DealFSM.usdt_amount)
@@ -335,19 +337,57 @@ async def _ask_deal_params(message: Message, state: FSMContext):
 
 @router.message(DealFSM.usdt_amount)
 async def on_usdt(message: Message, state: FSMContext):
-    await state.update_data(usdt_amount=message.text.strip())
-    await message.answer("<b>Сумма в рублях</b> (напр. 11 091 730,38):", parse_mode="HTML")
+    val = "" if message.text.strip() == "-" else message.text.strip()
+    await state.update_data(usdt_amount=val)
+    await message.answer(
+        "<b>Сумма в рублях</b> (напр. 1 350 000)
+"
+        "Или <b>-</b> чтобы посчитать автоматически из USDT × курс:",
+        parse_mode="HTML"
+    )
     await state.set_state(DealFSM.rub_amount)
 
 @router.message(DealFSM.rub_amount)
 async def on_rub(message: Message, state: FSMContext):
-    await state.update_data(rub_amount=message.text.strip())
-    await message.answer("<b>Курс обмена</b> (напр. 79,22):", parse_mode="HTML")
+    val = "" if message.text.strip() == "-" else message.text.strip()
+    await state.update_data(rub_amount=val)
+    await message.answer(
+        "<b>Курс обмена</b> (напр. 80,88)
+"
+        "Или <b>-</b> чтобы посчитать автоматически из RUB ÷ USDT:",
+        parse_mode="HTML"
+    )
     await state.set_state(DealFSM.exchange_rate)
 
 @router.message(DealFSM.exchange_rate)
 async def on_rate(message: Message, state: FSMContext):
-    await state.update_data(exchange_rate=message.text.strip())
+    from .generator import auto_calculate
+    val = "" if message.text.strip() == "-" else message.text.strip()
+    await state.update_data(exchange_rate=val)
+    d = await state.get_data()
+
+    # Считаем недостающее
+    calc = auto_calculate({
+        'usdt_amount':  d.get('usdt_amount', ''),
+        'rub_amount':   d.get('rub_amount', ''),
+        'exchange_rate': val,
+    })
+    await state.update_data(
+        usdt_amount=calc.get('usdt_amount', d.get('usdt_amount', '')),
+        rub_amount=calc.get('rub_amount', d.get('rub_amount', '')),
+        exchange_rate=calc.get('exchange_rate', val),
+    )
+    d = await state.get_data()
+    await message.answer(
+        f"✅ Суммы:
+"
+        f"  USDT: <b>{d.get('usdt_amount')}</b>
+"
+        f"  RUB:  <b>{d.get('rub_amount')}</b>
+"
+        f"  Курс: <b>{d.get('exchange_rate')}</b>",
+        parse_mode="HTML"
+    )
     await message.answer("<b>Кошелёк клиента</b> TRC-20:", parse_mode="HTML")
     await state.set_state(DealFSM.client_wallet)
 

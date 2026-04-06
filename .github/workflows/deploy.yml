@@ -16,8 +16,8 @@ jobs:
           key:      ${{ secrets.VPS_SSH_KEY }}
           script: |
             set -e
-            cd /opt/deal-docs-bot
+            cd /opt/Documents-Bot-Python-Hodler
             git pull origin main
             docker compose up -d --build
             docker image prune -f
-            echo "✅ Deployed at $(date)"
+            echo "Deployed at $(date)"

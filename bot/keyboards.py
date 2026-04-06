@@ -1,43 +1,45 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
+def doc_type_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="📋 По договору (лицензионный, контракт)", callback_data="doc_contract")
+    b.button(text="🌐 По публичной оферте (hodlerexchange.io)", callback_data="doc_offer")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def deal_type_kb() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="📥 BUY — мы продаём клиенту USDT",  callback_data="deal_buy")
-    builder.button(text="📤 SELL — клиент продаёт нам USDT", callback_data="deal_sell")
-    builder.adjust(1)
-    return builder.as_markup()
+    b = InlineKeyboardBuilder()
+    b.button(text="📥 BUY — мы продаём клиенту USDT",  callback_data="deal_buy")
+    b.button(text="📤 SELL — клиент продаёт нам USDT", callback_data="deal_sell")
+    b.adjust(1)
+    return b.as_markup()
 
 
 def clients_kb(clients: list) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    b = InlineKeyboardBuilder()
     for c in clients:
-        builder.button(text=f"🏢 {c['name']} (ИНН {c['inn']})", callback_data=f"client_{c['inn']}")
-    builder.button(text="✏️ Новый клиент", callback_data="client_new")
-    builder.adjust(1)
-    return builder.as_markup()
+        name = f"{c['name_eng']} / {c['name_ru']}" if c.get("name_eng") else c["name_ru"]
+        b.button(text=f"🏢 {name}", callback_data=f"client_{c['id']}")
+    b.button(text="✏️ Новый клиент", callback_data="client_new")
+    b.adjust(1)
+    return b.as_markup()
 
 
 def confirm_kb() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Подтвердить и создать документы", callback_data="confirm_yes")
-    builder.button(text="🔄 Начать заново",                   callback_data="confirm_no")
-    builder.adjust(1)
-    return builder.as_markup()
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Всё верно — создать документы", callback_data="confirm_yes")
+    b.button(text="✏️ Изменить клиента",              callback_data="edit_client")
+    b.button(text="🔄 Начать заново",                  callback_data="confirm_no")
+    b.adjust(1)
+    return b.as_markup()
 
 
 def save_client_kb() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="💾 Да, сохранить", callback_data="save_yes")
-    builder.button(text="❌ Нет",           callback_data="save_no")
-    builder.adjust(2)
-    return builder.as_markup()
-
-
-def cancel_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="❌ Отмена")]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
+    b = InlineKeyboardBuilder()
+    b.button(text="💾 Сохранить", callback_data="save_yes")
+    b.button(text="❌ Нет",       callback_data="save_no")
+    b.adjust(2)
+    return b.as_markup()

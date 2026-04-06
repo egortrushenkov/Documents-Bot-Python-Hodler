@@ -1,5 +1,4 @@
-import json
-import os
+import json, os
 
 CLIENTS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "clients.json")
 
@@ -19,13 +18,19 @@ def save(clients: dict):
 
 def add(client: dict):
     clients = load()
-    clients[client["inn"]] = client
+    clients[client["id"]] = client
     save(clients)
 
 
-def list_clients() -> list[dict]:
+def list_clients() -> list:
     return list(load().values())
 
 
-def get_by_inn(inn: str) -> dict | None:
-    return load().get(inn)
+def get_by_id(client_id: str) -> dict | None:
+    return load().get(client_id)
+
+
+def display_name(client: dict) -> str:
+    if client.get("name_eng"):
+        return f"{client['name_eng']} / {client['name_ru']}"
+    return client["name_ru"]

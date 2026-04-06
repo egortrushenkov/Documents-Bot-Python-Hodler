@@ -1,7 +1,5 @@
 .env
 data/output/
-data/clients.json
 __pycache__/
 *.pyc
-*.pyo
 .DS_Store

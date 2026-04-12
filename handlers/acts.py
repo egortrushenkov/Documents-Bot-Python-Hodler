@@ -631,3 +631,16 @@ async def generate_act(cb: CallbackQuery, state: FSMContext):
             f"❌ <b>Ошибка генерации</b>\n<code>{e}</code>",
             parse_mode="HTML"
         )
+
+
+# ─── Reply keyboard shortcut ──────────────────────────────────────────────────
+
+@router.message(F.text == "📋 Создать акт")
+async def shortcut_create_act(msg: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(ActForm.select_type)
+    await msg.answer(
+        "📋 <b>Создание акта</b>\n\nВыберите тип операции:",
+        reply_markup=act_type_kb(),
+        parse_mode="HTML"
+    )

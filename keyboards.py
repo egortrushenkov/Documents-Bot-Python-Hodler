@@ -8,7 +8,26 @@ from typing import List, Dict, Any
 remove_kb = ReplyKeyboardRemove()
 
 
-# ─── Main Menu ────────────────────────────────────────────────────────────────
+# ─── Persistent navigation reply keyboard (always visible at bottom) ──────────
+
+def nav_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📋 Создать акт"),
+                KeyboardButton(text="🏢 Компании"),
+            ],
+            [
+                KeyboardButton(text="⚙️ Реквизиты"),
+                KeyboardButton(text="🏠 Меню"),
+            ],
+        ],
+        resize_keyboard=True,
+        persistent=True,
+    )
+
+
+# ─── Main Menu (inline) ───────────────────────────────────────────────────────
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -25,7 +44,6 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 # ─── Companies ────────────────────────────────────────────────────────────────
 
 def companies_list_kb(companies: List[Dict[str, Any]], mode: str = "manage") -> InlineKeyboardMarkup:
-    """mode: manage | select"""
     builder = InlineKeyboardBuilder()
     for c in companies:
         if mode == "select":
@@ -145,8 +163,8 @@ def skip_kb(skip_callback: str, label: str = "Пропустить / остав�
 def confirm_act_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="✅ Генерировать документы", callback_data="act:generate"))
-    builder.row(InlineKeyboardButton(text="✏️ Редактировать поля", callback_data="act:edit_menu"))
-    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="menu:main"))
+    builder.row(InlineKeyboardButton(text="✏️ Редактировать поля",    callback_data="act:edit_menu"))
+    builder.row(InlineKeyboardButton(text="❌ Отмена",                 callback_data="menu:main"))
     return builder.as_markup()
 
 

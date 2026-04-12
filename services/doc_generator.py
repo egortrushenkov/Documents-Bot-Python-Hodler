@@ -1,6 +1,5 @@
 """
 Генерация DOCX-документов из шаблонов.
-Шаблоны должны быть подготовлены скриптом prepare_templates.py.
 """
 import os
 import shutil
@@ -16,7 +15,6 @@ MONTHS_RU = {
 
 
 def format_date_full(date_str: str) -> str:
-    """'12.04.2026' → '«12» апреля 2026 г.'"""
     try:
         d = datetime.strptime(date_str, "%d.%m.%Y")
         return f"«{d.day}» {MONTHS_RU[d.month]} {d.year} г."
@@ -25,31 +23,33 @@ def format_date_full(date_str: str) -> str:
 
 
 def format_number(value: str) -> str:
-    """Форматирует число с пробелом-разделителем тысяч: '500000' → '500 000'"""
     try:
-        n = float(value.replace(",", ".").replace(" ", ""))
+        n = float(str(value).replace(",", ".").replace(" ", ""))
         if n == int(n):
             return f"{int(n):,}".replace(",", " ")
-        return f"{n:,.3f}".replace(",", " ").rstrip("0").rstrip(".")
+        # Up to 6 decimal places, strip trailing zeros
+        s = f"{n:.6f}".rstrip("0").rstrip(".")
+        # Add thousand separators to integer part
+        parts = s.split(".")
+        parts[0] = f"{int(parts[0]):,}".replace(",", " ")
+        return ".".join(parts)
     except Exception:
-        return value
+        return str(value)
 
 
-def _merge_and_replace(doc: Document, replacements: dict):
-    """
-    Объединяет раны в каждом параграфе и применяет замены плейсхолдеров.
-    """
+def _replace_in_doc(doc: Document, replacements: dict):
+    """Replace all placeholder tokens throughout the document."""
     def process_para(para):
         if not para.runs:
             return
-        full_text = "".join(r.text for r in para.runs)
-        if not any(k in full_text for k in replacements):
+        full = "".join(r.text for r in para.runs)
+        if not any(k in full for k in replacements):
             return
         for k, v in replacements.items():
-            full_text = full_text.replace(k, str(v) if v is not None else "")
-        para.runs[0].text = full_text
-        for run in para.runs[1:]:
-            run.text = ""
+            full = full.replace(k, str(v) if v is not None else "")
+        para.runs[0].text = full
+        for r in para.runs[1:]:
+            r.text = ""
 
     for para in doc.paragraphs:
         process_para(para)
@@ -61,38 +61,24 @@ def _merge_and_replace(doc: Document, replacements: dict):
 
 
 def build_replacements(deal: dict, op: dict, client: dict) -> dict:
-    """
-    Формирует словарь всех плейсхолдеров для подстановки.
-    deal    — данные сделки
-    op      — настройки оператора (из БД)
-    client  — данные компании-клиента (из БД)
-    """
     deal_date      = deal.get("deal_date", "")
     deal_date_full = format_date_full(deal_date)
     exec_date      = deal.get("execution_date", deal_date)
 
-    va_amount_raw  = deal.get("va_amount", "0")
-    fiat_amount_raw= deal.get("fiat_amount", "0")
-    va_amount_fmt  = format_number(va_amount_raw)
-    fiat_amount_fmt= format_number(fiat_amount_raw)
+    va_amount_fmt   = format_number(deal.get("va_amount", "0"))
+    fiat_amount_fmt = format_number(deal.get("fiat_amount", "0"))
 
-    va_type    = deal.get("va_type", "USDT")
-    network    = deal.get("network", "TRC-20")
-    va_ticker  = f"{va_type}_{network.replace('-','')}"  # USDT_TRC20
+    va_type  = deal.get("va_type", "USDT")
+    network  = deal.get("network", "TRC-20")
+    va_ticker = f"{va_type}_{network.replace('-', '')}"
 
-    kvvo       = deal.get("kvvo", "99082")
-    act_type   = deal.get("act_type", "sell")  # sell | buy
-
-    if act_type == "sell":
-        operation_type = "Покупка виртуальных активов"
-    else:
-        operation_type = "Продажа виртуальных активов"
-
+    kvvo        = deal.get("kvvo", "99082")
+    act_type    = deal.get("act_type", "sell")
     deal_number = str(deal.get("deal_number", ""))
-    payment_purpose = (
-        f"VO {kvvo} За виртуальный актив по заявке "
-        f"№{deal_number} от {deal_date} согласно Соглашения "
-        f"https://hodlerexchange.io/home/documents. НДС не облагается."
+
+    operation_type = (
+        "Покупка виртуальных активов" if act_type == "sell"
+        else "Продажа виртуальных активов"
     )
 
     return {
@@ -102,7 +88,6 @@ def build_replacements(deal: dict, op: dict, client: dict) -> dict:
         "{{DEAL_DATE_FULL}}":    deal_date_full,
         "{{OPERATION_TYPE}}":    operation_type,
         "{{KVVO}}":              kvvo,
-        "{{PAYMENT_PURPOSE}}":   payment_purpose,
         "{{VA_TYPE}}":           va_type,
         "{{NETWORK}}":           network,
         "{{VA_TICKER}}":         va_ticker,
@@ -135,8 +120,6 @@ def build_replacements(deal: dict, op: dict, client: dict) -> dict:
         "{{OP_BANK_ACCOUNT}}":   op.get("bank_account", ""),
         "{{OP_BANK_BIK}}":       op.get("bank_bik", ""),
         "{{OP_DIRECTOR}}":       op.get("director_name", ""),
-        "{{BANK_NAME}}":         op.get("bank_name", ""),
-        "{{BANK_BIK}}":          op.get("bank_bik", ""),
 
         # ── Клиент ────────────────────────────────────────────────────────────
         "{{CL_FULL_NAME}}":      client.get("full_name", ""),
@@ -148,17 +131,14 @@ def build_replacements(deal: dict, op: dict, client: dict) -> dict:
         "{{CL_KIO}}":            client.get("kio", "-"),
         "{{CL_INN_RF}}":         client.get("inn_rf", "-"),
         "{{CL_KPP_RF}}":         client.get("kpp_rf", "-"),
-        "{{CL_BANK_NAME}}":      client.get("bank_name", ""),
+        "{{CL_BANK_NAME}}":      client.get("bank_name", ""),      # ← отдельно от оператора!
         "{{CL_BANK_ACCOUNT}}":   client.get("bank_account", ""),
-        "{{CL_BANK_BIK}}":       client.get("bank_bik", ""),
+        "{{CL_BANK_BIK}}":       client.get("bank_bik", ""),       # ← отдельно от оператора!
     }
 
 
 def generate_docx(deal: dict, op: dict, client: dict) -> str:
-    """
-    Генерирует DOCX и возвращает путь к файлу.
-    """
-    act_type = deal.get("act_type", "sell")
+    act_type      = deal.get("act_type", "sell")
     template_name = TEMPLATE_SELL if act_type == "sell" else TEMPLATE_BUY
     template_path = os.path.join(TEMPLATES_DIR, template_name)
 
@@ -171,13 +151,14 @@ def generate_docx(deal: dict, op: dict, client: dict) -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     deal_number = deal.get("deal_number", "0")
     deal_date   = deal.get("deal_date", "").replace(".", "")
+    cl_short    = client.get("short_name", "CL").replace("«","").replace("»","").replace(" ","_")[:10]
     direction   = "sell" if act_type == "sell" else "buy"
-    out_name    = f"act_{direction}_{deal_number}_{deal_date}.docx"
+    out_name    = f"act_{direction}_{deal_number}-{cl_short}_{deal_date}.docx"
     out_path    = os.path.join(OUTPUT_DIR, out_name)
 
     shutil.copy(template_path, out_path)
     doc          = Document(out_path)
     replacements = build_replacements(deal, op, client)
-    _merge_and_replace(doc, replacements)
+    _replace_in_doc(doc, replacements)
     doc.save(out_path)
     return out_path

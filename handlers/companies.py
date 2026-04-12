@@ -224,3 +224,13 @@ async def handle_company_input(msg: Message, state: FSMContext):
             reply_markup=company_card_kb(cid),
             parse_mode="HTML"
         )
+
+
+# ─── Reply keyboard shortcuts ─────────────────────────────────────────────────
+
+@router.message(F.text == "🏢 Компании")
+async def shortcut_companies(msg: Message, state: FSMContext):
+    await state.clear()
+    companies = await db.get_all_companies()
+    text = f"<b>🏢 Компании</b> ({len(companies)} шт.)" if companies else "📭 Список компаний пуст."
+    await msg.answer(text, reply_markup=companies_list_kb(companies), parse_mode="HTML")

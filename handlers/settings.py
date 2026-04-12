@@ -85,3 +85,12 @@ async def save_setting(msg: Message, state: FSMContext):
         reply_markup=settings_kb(),
         parse_mode="HTML"
     )
+
+
+# ─── Reply keyboard shortcut ──────────────────────────────────────────────────
+
+@router.message(F.text == "⚙️ Реквизиты")
+async def shortcut_settings(msg: Message, state: FSMContext):
+    await state.clear()
+    s = await db.get_all_settings()
+    await msg.answer(settings_text(s), reply_markup=settings_kb(), parse_mode="HTML")

@@ -207,7 +207,6 @@ async def handle_company_input(msg: Message, state: FSMContext):
     if next_idx < len(FIELDS):
         key, label, example = FIELDS[next_idx]
         await state.update_data(field_index=next_idx, company_data=company_data)
-        await STATES_ORDER[next_idx].set()  # type: ignore[attr-defined]
         await state.set_state(STATES_ORDER[next_idx])
         await msg.answer(
             f"Шаг {next_idx+1}/{len(FIELDS)} — {label}:\n"

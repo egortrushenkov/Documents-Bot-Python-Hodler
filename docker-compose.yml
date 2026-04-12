@@ -1,12 +1,16 @@
+version: "3.9"
+
 services:
-  bot:
+  hodler-bot:
     build: .
-    image: deal-docs-bot:latest
-    container_name: deal-docs-bot
+    container_name: hodler-doc-bot
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data          # БД и сгенерированные файлы
+      - ./templates:/app/templates # Шаблоны DOCX
+    environment:
+      - PYTHONUNBUFFERED=1
     logging:
       driver: "json-file"
       options:

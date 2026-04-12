@@ -1,110 +1,205 @@
-# Hodler Deal Docs Bot
+# Hodler Doc Generator Bot
 
-Telegram-бот для генерации закрывающих документов (DOCX + PDF) по сделкам Hodler Exchange.
+Telegram-бот для автоматической генерации актов и договоров на сделки с виртуальными активами для юридических лиц.
 
-## Быстрый старт
+## Что умеет
 
-### 1. Создать бота
-Напишите @BotFather → `/newbot` → получите `BOT_TOKEN`
-
-### 2. Узнать свой Telegram ID
-Напишите @userinfobot → скопируйте ID
-
-### 3. Первичная установка на сервере
-```bash
-# На VPS (Ubuntu):
-curl -fsSL https://raw.githubusercontent.com/egortrushenkov/deal-docs-bot/main/deploy.sh | bash
-```
-
-Скрипт установит Docker, склонирует репо и попросит заполнить `.env`.
-
-### 4. Заполнить `.env`
-```bash
-nano /opt/deal-docs-bot/.env
-```
-```env
-BOT_TOKEN=1234567890:AAxxxxxxxxxxxxxxxx
-ALLOWED_USER_IDS=123456789,987654321
-```
-
-### 5. Положить шаблон
-```bash
-# С локальной машины:
-scp TEMPLATE_hodler_deal.docx user@YOUR_VPS:/opt/deal-docs-bot/data/
-```
-
-### 6. Запустить
-```bash
-bash /opt/deal-docs-bot/deploy.sh
-```
+- **2 типа акта**: «Продаём ВА клиенту» и «Покупаем ВА у клиента»
+- **База компаний**: добавить один раз — реквизиты подтянутся автоматически
+- **Автодата**: сегодняшнее число по умолчанию, можно изменить
+- **Автономер**: счётчик заявок с возможностью ручного ввода
+- **Автокурс**: вычисляется из суммы ВА и суммы RUB, можно скорректировать
+- **КВВО**: выбор из часто используемых или ввод своего
+- **PDF**: автоматическая конвертация через LibreOffice
+- **Редактирование**: любое поле можно изменить перед генерацией
 
 ---
 
-## Автодеплой (GitHub Actions)
+## Быстрый старт (Docker — рекомендуется)
 
-При каждом `git push main` бот автоматически обновляется на сервере.
+### 1. Клонировать / скопировать проект
 
-**Настройка секретов** в GitHub → Settings → Secrets → Actions:
-
-| Secret | Значение |
-|--------|---------|
-| `VPS_HOST` | IP вашего сервера |
-| `VPS_USER` | `root` или ваш пользователь |
-| `VPS_SSH_KEY` | Приватный SSH-ключ (содержимое `~/.ssh/id_rsa`) |
-
-Если SSH-ключа нет — создайте на сервере:
 ```bash
-ssh-keygen -t ed25519 -C "github-actions"
-cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
-cat ~/.ssh/id_ed25519  # скопируйте в VPS_SSH_KEY
+git clone <repo> hodler-doc-bot
+cd hodler-doc-bot
 ```
+
+### 2. Создать `.env`
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Заполнить `BOT_TOKEN` и `ADMIN_IDS`.
+
+### 3. Положить оригинальные шаблоны
+
+В папку `templates/` поместить оба файла:
+- `Акт_покупке_у_нас_ЮЛ.docx`
+- `Акт_продаже_нам_от_ЮЛ.docx`
+
+### 4. Запустить
+
+```bash
+docker compose up -d --build
+```
+
+При первом запуске автоматически:
+- подготовятся шаблоны (`prepare_templates.py`)
+- создастся БД с реквизитами оператора по умолчанию
 
 ---
 
-## Команды бота
+## Локальный запуск (без Docker)
 
-| Команда | Действие |
-|---------|---------|
-| `/new` | Создать новый документ |
-| `/clients` | Список сохранённых клиентов |
-| `/cancel` | Отменить текущий диалог |
+### Требования
+- Python 3.11+
+- LibreOffice (`libreoffice` в PATH)
+
+```bash
+pip install -r requirements.txt
+
+# Подготовить шаблоны (один раз)
+python prepare_templates.py
+
+# Запустить бота
+python bot.py
+```
 
 ---
 
 ## Структура проекта
 
 ```
-deal-docs-bot/
-├── bot/
-│   ├── main.py        — точка входа
-│   ├── handlers.py    — FSM-диалог
-│   ├── states.py      — состояния диалога
-│   ├── generator.py   — генерация DOCX/PDF
-│   ├── clients.py     — база клиентов
-│   └── keyboards.py   — кнопки
-├── data/              — монтируется как volume
-│   ├── TEMPLATE_hodler_deal.docx  ← положить вручную
-│   ├── clients.json               ← создаётся автоматически
-│   └── output/                    ← готовые документы
+hodler-doc-bot/
+├── bot.py                  # Точка входа
+├── config.py               # Конфиг из .env
+├── database.py             # SQLite: компании, настройки, счётчик
+├── states.py               # FSM-состояния
+├── keyboards.py            # Все клавиатуры
+├── prepare_templates.py    # Подготовка шаблонов (один раз)
+│
+├── handlers/
+│   ├── menu.py             # Главное меню
+│   ├── companies.py        # CRUD компаний
+│   ├── acts.py             # Создание акта (15 шагов FSM)
+│   └── settings.py         # Реквизиты оператора
+│
+├── services/
+│   ├── doc_generator.py    # Генерация DOCX из шаблона
+│   └── pdf_converter.py    # Конвертация DOCX → PDF
+│
+├── templates/
+│   ├── Акт_покупке_у_нас_ЮЛ.docx   # Оригинал (не трогать)
+│   ├── Акт_продаже_нам_от_ЮЛ.docx  # Оригинал (не трогать)
+│   ├── template_sell.docx           # Генерируется автоматически
+│   └── template_buy.docx            # Генерируется автоматически
+│
+├── data/
+│   ├── hodler.db           # SQLite-база
+│   └── output/             # Сгенерированные файлы
+│
 ├── Dockerfile
 ├── docker-compose.yml
-├── .env.example
-├── deploy.sh          — первичная установка
-└── .github/workflows/deploy.yml  — автодеплой
+├── requirements.txt
+└── .env.example
 ```
 
-## Полезные команды на сервере
+---
+
+## Поля компании (сохраняются в базе)
+
+| Поле | Описание |
+|------|----------|
+| Полное наименование | «Общество с ограниченной ответственностью...» |
+| Краткое наименование | «ОсОО «...»» |
+| ИНН | |
+| КПП | |
+| Рег. номер (ОГРН/КР) | |
+| Юридический адрес | |
+| КИО | Код иностранной организации в РФ (или `-`) |
+| ИНН в РФ | (или `-`) |
+| КПП в РФ | (или `-`) |
+| Банк | Наименование банка |
+| Расчётный счёт | |
+| БИК | |
+| Кошелёк | Адрес крипто-кошелька |
+
+---
+
+## Переменные в документах
+
+Шаблоны содержат плейсхолдеры вида `{{VARIABLE}}`:
+
+### Сделка
+| Плейсхолдер | Значение |
+|-------------|----------|
+| `{{DEAL_NUMBER}}` | Номер заявки |
+| `{{DEAL_DATE}}` | Дата заявки (ДД.ММ.ГГГГ) |
+| `{{DEAL_DATE_FULL}}` | «ДД» месяц ГГГГ г. |
+| `{{EXECUTION_DATE}}` | Дата исполнения |
+| `{{OPERATION_TYPE}}` | Покупка / Продажа виртуальных активов |
+| `{{KVVO}}` | Код вида валютной операции |
+| `{{VA_TYPE}}` | USDT, BTC... |
+| `{{NETWORK}}` | TRC-20, ERC-20... |
+| `{{VA_TICKER}}` | USDT_TRC20... |
+| `{{VA_AMOUNT}}` | Сумма ВА |
+| `{{FIAT_AMOUNT}}` | Сумма RUB |
+| `{{EXCHANGE_RATE}}` | Курс обмена |
+| `{{TX_HASH}}` | Хэш транзакции |
+| `{{COMMISSION_FIAT}}` | Комиссия в % (RUB) |
+| `{{COMMISSION_VA}}` | Комиссия в % (ВА) |
+| `{{CL_WALLET}}` | Кошелёк клиента |
+| `{{OP_WALLET}}` | Кошелёк оператора |
+
+### Оператор (`OP_*`)
+`{{OP_FULL_NAME}}`, `{{OP_SHORT_NAME}}`, `{{OP_INN}}`, `{{OP_KPP}}`, `{{OP_ADDRESS}}`, `{{OP_LICENSE}}`, `{{OP_BANK_NAME}}`, `{{OP_BANK_ACCOUNT}}`, `{{OP_BANK_BIK}}`, `{{OP_DIRECTOR}}`
+
+### Клиент (`CL_*`)
+`{{CL_FULL_NAME}}`, `{{CL_SHORT_NAME}}`, `{{CL_INN}}`, `{{CL_KPP}}`, `{{CL_REG_NUMBER}}`, `{{CL_ADDRESS}}`, `{{CL_KIO}}`, `{{CL_INN_RF}}`, `{{CL_KPP_RF}}`, `{{CL_BANK_NAME}}`, `{{CL_BANK_ACCOUNT}}`, `{{CL_BANK_BIK}}`
+
+---
+
+## Обновление шаблонов
+
+Если изменились оригинальные DOCX:
+1. Заменить файлы в `templates/`
+2. Запустить `python prepare_templates.py`
+3. Перезапустить бота
+
+---
+
+## Деплой на Timeweb VPS (без Docker)
 
 ```bash
-# Логи в реальном времени
-docker compose -f /opt/deal-docs-bot/docker-compose.yml logs -f
+# На сервере
+cd /opt/hodler-doc-bot
+pip install -r requirements.txt
+python prepare_templates.py
 
-# Перезапуск
-docker compose -f /opt/deal-docs-bot/docker-compose.yml restart
+# Создать systemd-сервис
+sudo nano /etc/systemd/system/hodler-bot.service
+```
 
-# Остановка
-docker compose -f /opt/deal-docs-bot/docker-compose.yml down
+```ini
+[Unit]
+Description=Hodler Doc Generator Bot
+After=network.target
 
-# Ручное обновление без автодеплоя
-cd /opt/deal-docs-bot && git pull && docker compose up -d --build
+[Service]
+WorkingDirectory=/opt/hodler-doc-bot
+ExecStart=/usr/bin/python3 bot.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/hodler-doc-bot/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable hodler-bot
+sudo systemctl start hodler-bot
+sudo journalctl -u hodler-bot -f
 ```

@@ -1,31 +1,58 @@
 """
-Запускается один раз для подготовки шаблонов из оригинальных DOCX.
-Создаёт templates/template_sell.docx и templates/template_buy.docx
-с плейсхолдерами вида {{VARIABLE}}.
-
-Использование:
-    python prepare_templates.py
+Подготовка шаблонов из оригинальных DOCX.
+ВАЖНО: Не трогает раны с floating-изображениями (anchor).
 """
 import shutil
 import os
 from docx import Document
 
+WP_NS = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
 
-# ─── Core replace helpers ─────────────────────────────────────────────────────
 
-def _merge_para(para):
-    """Merge all runs of a paragraph into the first run."""
-    if not para.runs:
-        return
-    full = "".join(r.text for r in para.runs)
-    full = full.replace("\u00a0", " ").replace("\xa0", " ")  # normalize non-breaking spaces
-    para.runs[0].text = full
-    for r in para.runs[1:]:
-        r.text = ""
+def _has_drawing(run) -> bool:
+    """Ран содержит floating или inline изображение."""
+    el = run._element
+    return (
+        bool(el.findall('.//{%s}anchor' % WP_NS)) or
+        bool(el.findall('.//{%s}inline' % WP_NS))
+    )
+
+
+def _merge_text_runs(para):
+    """
+    Объединяет только текстовые раны (без картинок) в первый текстовый ран.
+    Раны с картинками НЕ трогает — они остаются на своих местах.
+    """
+    # Найти индекс первого текстового рана (без drawing)
+    first_text_idx = None
+    for i, run in enumerate(para.runs):
+        if not _has_drawing(run):
+            first_text_idx = i
+            break
+
+    if first_text_idx is None:
+        return  # только картинки — не трогаем
+
+    # Собрать весь текст из текстовых ранов
+    full_text = ''.join(
+        r.text for r in para.runs
+        if not _has_drawing(r) and r.text
+    )
+
+    # Нормализовать неразрывные пробелы
+    full_text = full_text.replace('\u00a0', ' ').replace('\xa0', ' ')
+
+    # Записать весь текст в первый текстовый ран
+    para.runs[first_text_idx].text = full_text
+
+    # Обнулить все остальные текстовые раны (картинки не трогаем)
+    for i, run in enumerate(para.runs):
+        if i != first_text_idx and not _has_drawing(run):
+            run.text = ''
 
 
 def _all_paras(doc):
-    """Yield all paragraphs: body + every table cell."""
+    """Все параграфы: body + таблицы."""
     for p in doc.paragraphs:
         yield p
     for table in doc.tables:
@@ -36,37 +63,41 @@ def _all_paras(doc):
 
 
 def merge_all(doc):
-    """Merge runs in all paragraphs (call once before any replacement)."""
     for p in _all_paras(doc):
-        _merge_para(p)
+        _merge_text_runs(p)
 
 
 def replace_all(doc, old: str, new: str):
-    """Replace ALL occurrences of old → new throughout the document."""
+    """Заменить все вхождения old→new во всех текстовых ранах."""
     for p in _all_paras(doc):
-        if old in p.runs[0].text if p.runs else False:
-            p.runs[0].text = p.runs[0].text.replace(old, new)
+        for run in p.runs:
+            if _has_drawing(run):
+                continue
+            if run.text and old in run.text:
+                run.text = run.text.replace(old, new)
 
 
 def replace_first(doc, old: str, new: str) -> bool:
-    """Replace only the FIRST occurrence. Returns True if replaced."""
+    """Заменить первое вхождение old→new. Возвращает True если нашёл."""
     for p in _all_paras(doc):
-        if p.runs and old in p.runs[0].text:
-            p.runs[0].text = p.runs[0].text.replace(old, new, 1)
-            return True
+        for run in p.runs:
+            if _has_drawing(run):
+                continue
+            if run.text and old in run.text:
+                run.text = run.text.replace(old, new, 1)
+                return True
     return False
 
 
 def replace_ordered(doc, replacements: list):
-    """Apply a list of (old, new) replacements to ALL occurrences, in order."""
     for old, new in replacements:
         replace_all(doc, old, new)
 
 
-# ─── Common replacements (apply to both templates) ────────────────────────────
+# ─── Замены ───────────────────────────────────────────────────────────────────
 
 BASE_REPLACEMENTS = [
-    # ── Сделка (специфичные сначала) ──────────────────────────────────────────
+    # ── Сделка ────────────────────────────────────────────────────────────────
     ("VO 99082 За виртуальный актив по заявке №499 от 17.02.2026",
      "VO {{KVVO}} За виртуальный актив по заявке №{{DEAL_NUMBER}} от {{DEAL_DATE}}"),
     ("Покупка виртуальных активов по заявке №499 от 17.02.2026",
@@ -77,15 +108,12 @@ BASE_REPLACEMENTS = [
     ("Акт №499 от 17.02.2026",       "Акт №{{DEAL_NUMBER}} от {{DEAL_DATE}}"),
     ("Заявка №499 от 17.02.2026",    "Заявка №{{DEAL_NUMBER}} от {{DEAL_DATE}}"),
     ("по заявке №499 от 17.02.2026", "по заявке №{{DEAL_NUMBER}} от {{DEAL_DATE}}"),
+    ("№499  от 17.02.2026",          "№{{DEAL_NUMBER}} от {{DEAL_DATE}}"),  # двойной пробел
     ("№499 от 17.02.2026",           "№{{DEAL_NUMBER}} от {{DEAL_DATE}}"),
-    ("№499  от 17.02.2026",          "№{{DEAL_NUMBER}} от {{DEAL_DATE}}"),  # double space variant
-    ("500 000  RUR",                 "{{FIAT_AMOUNT}} RUR"),                 # double space variant
     ("«17» февраля 2026 г.",         "{{DEAL_DATE_FULL}}"),
     ("17.02.2026",                   "{{DEAL_DATE}}"),
 
-    # ── Справка: полные предложения с ИНН (до коротких замен!) ─────────────────
-    # Эти строки содержат "ИНН XXXXXXXXX" (пробел, без двоеточия) — нужно заменить
-    # до того как меняем короткие «ИНН:XXXX»
+    # ── Справка: полные предложения (до коротких замен ИНН!) ──────────────────
     ('Общество с ограниченной ответственностью "СТЕЙБЛЕКС", ИНН 9909730748, Местонахождение: Кыргызская Республика, город Бишкек, Свердловский район, улица Московская, дом 197',
      '{{OP_FULL_NAME}}, ИНН {{OP_INN}}, Местонахождение: {{OP_ADDRESS_FULL}}'),
     ('Общество с ограниченной ответственностью "Алтынкопрю", ИНН 9909745705, Местонахождение: Кыргызстан, г. Бишкек, ул. Целинная 47',
@@ -106,11 +134,9 @@ BASE_REPLACEMENTS = [
     ("720009, г. Бишкек, ул. Московская, д. 197",       "{{OP_ADDRESS}}"),
     ("Кыргызская Республика, город Бишкек, Свердловский район, улица Московская, дом 197",
      "{{OP_ADDRESS_FULL}}"),
-    # Лицензия в тексте акта
     ("ИНН: 02504202410133",  "ИНН: {{OP_INN}}"),
     ("02504202410133",       "{{OP_INN}}"),
     ("Лицензия: 150 от 28-03-2025", "Лицензия: {{OP_LICENSE}}"),
-    # Директор
     ("Зенков И.В.",          "{{OP_DIRECTOR}}"),
 
     # ── Клиент ────────────────────────────────────────────────────────────────
@@ -125,9 +151,8 @@ BASE_REPLACEMENTS = [
     ("317744-3301-ООО",      "{{CL_REG_NUMBER}}"),
     ("Кыргызстан, г. Бишкек, ул. Целинная 47", "{{CL_ADDRESS}}"),
 
-    # ── Оператор: расчётный счёт (делаем ДО банка, т.к. банк у обоих одинаковый) ──
+    # ── Счета (до банка!) ─────────────────────────────────────────────────────
     ("40807810500014264602", "{{OP_BANK_ACCOUNT}}"),
-    # ── Клиент: расчётный счёт ────────────────────────────────────────────────
     ("40807810600014672000", "{{CL_BANK_ACCOUNT}}"),
 
     # ── Кошельки ──────────────────────────────────────────────────────────────
@@ -143,6 +168,7 @@ BASE_REPLACEMENTS = [
     ("500 USDT",           "{{VA_AMOUNT_SHORT}} {{VA_TYPE}}"),
     ("6 287.726 USDT",     "{{VA_AMOUNT}} {{VA_TYPE}}"),
     ("6287.726",           "{{VA_AMOUNT}}"),
+    ("500 000  RUR",       "{{FIAT_AMOUNT}} RUR"),   # двойной пробел
     ("500 000 RUR",        "{{FIAT_AMOUNT}} RUR"),
     ("500 000 RUB",        "{{FIAT_AMOUNT}} RUB"),
     ("500 000",            "{{FIAT_AMOUNT}}"),
@@ -153,55 +179,82 @@ BASE_REPLACEMENTS = [
     ("d30791fb7a5a460fce1ff756e0467aff26efea899c265d51abcb247af50f31e6", "{{TX_HASH}}"),
 ]
 
-# ─── Per-template extras ──────────────────────────────────────────────────────
-
-SELL_EXTRA = [
-    ("{{CL_KIO_PLACEHOLDER}}", "-"),
-]
-
-BUY_EXTRA = [
-    ("{{CL_KIO_PLACEHOLDER}}", "{{OP_KIO}}"),
-]
+SELL_EXTRA = [("{{CL_KIO_PLACEHOLDER}}", "-")]
+BUY_EXTRA  = [("{{CL_KIO_PLACEHOLDER}}", "{{OP_KIO}}")]
 
 
-# ─── Bank placeholder: positional (first=client, second=operator) ─────────────
-
-def apply_bank_placeholders(doc, sell: bool):
+def apply_bank_placeholders(doc):
     """
-    Банк и БИК одинаковы у обоих участников в шаблоне.
-    В таблице заявки:
-      - «Банковские реквизиты Клиента» идёт ПЕРВОЙ строкой  → CL_BANK_*
-      - «Банковские реквизиты Оператора» идёт ВТОРОЙ строкой → OP_BANK_*
-    Используем replace_first дважды подряд.
+    Банк и БИК одинаковы у обоих участников.
+    Первое вхождение → клиент, второе → оператор.
     """
-    # Банк (КБ "Долинск" или любой другой — заменяем первое вхождение)
     bank_str = 'КБ "Долинск" (АО)'
     replace_first(doc, bank_str, "{{CL_BANK_NAME}}")
     replace_first(doc, bank_str, "{{OP_BANK_NAME}}")
-
-    # БИК
-    bik_str = "046401727"
-    replace_first(doc, bik_str, "{{CL_BANK_BIK}}")
-    replace_first(doc, bik_str, "{{OP_BANK_BIK}}")
+    replace_first(doc, "046401727", "{{CL_BANK_BIK}}")
+    replace_first(doc, "046401727", "{{OP_BANK_BIK}}")
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+def verify(doc, template_name: str):
+    """Проверяет что ключевые плейсхолдеры созданы и нет старых значений."""
+    all_text = ''
+    for p in _all_paras(doc):
+        for r in p.runs:
+            if not _has_drawing(r) and r.text:
+                all_text += r.text
 
-def prepare(src: str, dst: str, extra: list, sell: bool):
+    must_have = [
+        '{{DEAL_NUMBER}}', '{{FIAT_AMOUNT}}', '{{VA_AMOUNT}}',
+        '{{CL_BANK_NAME}}', '{{OP_BANK_NAME}}', '{{CL_INN}}', '{{OP_INN}}',
+    ]
+    must_not  = ['499', '9909745705', '9909730748', '500 000', '6287']
+
+    ok = True
+    for ph in must_have:
+        if ph not in all_text:
+            print(f'  ⚠ НЕ СОЗДАН: {ph}')
+            ok = False
+    for val in must_not:
+        if val in all_text:
+            print(f'  ⚠ ОСТАЛСЯ ОРИГИНАЛ: {val}')
+            ok = False
+
+    # Проверить что картинки на месте
+    wp_ns = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
+    drawing_count = 0
+    for p in doc.paragraphs:
+        for r in p.runs:
+            if _has_drawing(r):
+                drawing_count += 1
+    print(f'  Floating-картинок в шаблоне: {drawing_count}')
+
+    if ok:
+        print(f'  ✅ {template_name}: все плейсхолдеры OK')
+    return ok
+
+
+def prepare(src: str, dst: str, extra: list):
     print(f"  {os.path.basename(src)} → {os.path.basename(dst)}")
     shutil.copy(src, dst)
     doc = Document(dst)
 
-    # 1. Merge runs first
+    # Сколько картинок в оригинале
+    wp_ns = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
+    orig_drawings = sum(
+        1 for p in doc.paragraphs
+        for r in p.runs
+        if r._element.findall('.//{%s}anchor' % wp_ns)
+    )
+    print(f"  Картинок в оригинале: {orig_drawings}")
+
     merge_all(doc)
-
-    # 2. Apply base replacements
     replace_ordered(doc, BASE_REPLACEMENTS + extra)
-
-    # 3. Positional bank replacement (first=CL, second=OP)
-    apply_bank_placeholders(doc, sell=sell)
-
+    apply_bank_placeholders(doc)
     doc.save(dst)
+
+    # Reload and verify
+    doc2 = Document(dst)
+    verify(doc2, os.path.basename(dst))
     print(f"  ✓ сохранён: {dst}")
 
 
@@ -209,20 +262,18 @@ if __name__ == "__main__":
     base = os.path.dirname(os.path.abspath(__file__))
     tpl  = os.path.join(base, "templates")
 
-    print("Подготовка шаблона SELL (продаём ВА клиенту)...")
+    print("Подготовка шаблона SELL...")
     prepare(
         src=os.path.join(tpl, "Акт_покупке_у_нас_ЮЛ.docx"),
         dst=os.path.join(tpl, "template_sell.docx"),
         extra=SELL_EXTRA,
-        sell=True,
     )
 
-    print("Подготовка шаблона BUY (покупаем ВА у клиента)...")
+    print("\nПодготовка шаблона BUY...")
     prepare(
         src=os.path.join(tpl, "Акт_продаже_нам_от_ЮЛ.docx"),
         dst=os.path.join(tpl, "template_buy.docx"),
         extra=BUY_EXTRA,
-        sell=False,
     )
 
-    print("\n✅ Шаблоны готовы в папке templates/")
+    print("\n✅ Шаблоны готовы")

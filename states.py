@@ -33,10 +33,12 @@ class ActForm(StatesGroup):
     kvvo             = State()
     client_wallet    = State()
     operator_wallet  = State()
-    tx_hash          = State()
-    add_tx           = State()   # добавить ещё транзакцию / продолжить
-    extra_va         = State()   # сумма ВА доп. транзакции
-    extra_tx_hash    = State()   # хэш доп. транзакции
+    split_mode       = State()   # одной транзакцией / разбить (тест + остаток)
+    tx_one_hash      = State()   # хэш единственной транзакции
+    add_tx           = State()   # хаб разбивки: добавить тест / завершить
+    extra_va         = State()   # сумма ВА тест-транзакции
+    extra_tx_hash    = State()   # хэш тест-транзакции
+    remainder_hash   = State()   # хэш остатка
     commission_fiat  = State()
     commission_va    = State()
     execution_date   = State()

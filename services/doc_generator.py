@@ -183,8 +183,8 @@ def _to_float(value) -> float:
 
 def get_transactions(deal: dict) -> list:
     """
-    Список транзакций. Несколько — только если их явно добавили (>1).
-    Для одной транзакции берём текущие поля сделки (так работает ручное
+    Список транзакций (частей сделки). Несколько — только если их явно
+    добавили (>1). Для одной берём текущие поля сделки (так работает ручное
     редактирование суммы/хэша через меню правок).
     """
     txs = deal.get('transactions')
@@ -194,6 +194,35 @@ def get_transactions(deal: dict) -> list:
         'va_amount': deal.get('va_amount', '0'),
         'tx_hash':   deal.get('tx_hash', ''),
     }]
+
+
+def computed_transactions(deal: dict) -> list:
+    """
+    Транзакции-части сделки с рассчитанными рублями по курсу.
+    Сумма ВА частей = общей сумме сделки; рубли каждой части = ВА × курс,
+    последняя часть (остаток) добивается так, чтобы рубли точно дали общую сумму.
+    Возвращает [{'va_amount': str, 'fiat_amount': float, 'tx_hash': str}, ...].
+    """
+    txs        = get_transactions(deal)
+    total_va   = sum(_to_float(t.get('va_amount', 0)) for t in txs)
+    total_fiat = _to_float(deal.get('fiat_amount', 0))
+    rate       = (total_fiat / total_va) if total_va else 0.0
+
+    out, acc = [], 0.0
+    last = len(txs) - 1
+    for i, t in enumerate(txs):
+        va = _to_float(t.get('va_amount', 0))
+        if i < last:
+            fiat = round(va * rate, 2)
+            acc += fiat
+        else:
+            fiat = round(total_fiat - acc, 2)   # остаток добивает до точной общей суммы
+        out.append({
+            'va_amount':   t.get('va_amount', '0'),
+            'fiat_amount': fiat,
+            'tx_hash':     t.get('tx_hash', ''),
+        })
+    return out
 
 
 def _row_text(row) -> str:
@@ -214,21 +243,18 @@ def _merge_row_runs(row):
                     r.text = ''
 
 
-def _fill_tx_row(row, tx: dict, is_first: bool):
-    """Подставляет в строку-транзакцию её сумму ВА и хэш."""
-    va = format_number(tx.get('va_amount', '0'))
+def _fill_tx_row(row, tx: dict):
+    """Подставляет в строку-транзакцию её сумму ВА, рубли (по курсу) и хэш."""
+    va   = format_number(tx.get('va_amount', '0'))
+    fiat = format_number(tx.get('fiat_amount', '0'))
     mapping = {
-        '{{VA_AMOUNT}}':       va,
-        '{{VA_AMOUNT_SHORT}}': va,
-        '{{TX_HASH}}':         tx.get('tx_hash', '') or '',
+        '{{VA_AMOUNT}}':         va,
+        '{{VA_AMOUNT_SHORT}}':   va,
+        '{{FIAT_AMOUNT}}':       fiat,
+        '{{FIAT_AMOUNT_SHORT}}': fiat,
+        '{{TX_HASH}}':           tx.get('tx_hash', '') or '',
     }
     for cell in row.cells:
-        # Сумма RUB показывается один раз (в первой строке); в доп. строках — пусто
-        if not is_first and '{{FIAT_AMOUNT}}' in cell.text:
-            for para in cell.paragraphs:
-                for r in para.runs:
-                    r.text = ''
-            continue
         for para in cell.paragraphs:
             for r in para.runs:
                 if _has_drawing(r) or not r.text:
@@ -264,7 +290,7 @@ def _expand_transactions(doc: Document, transactions: list):
             last = new_tr
 
         for j, tx in enumerate(transactions):
-            _fill_tx_row(table.rows[data_idx + j], tx, is_first=(j == 0))
+            _fill_tx_row(table.rows[data_idx + j], tx)
 
         # Строка «Итого» идёт сразу после блока транзакций
         total_idx = data_idx + len(transactions)
@@ -292,13 +318,14 @@ def generate_docx(deal: dict, op: dict, client: dict) -> str:
             f"Положите файл {template_name} в папку {TEMPLATES_DIR}/"
         )
 
-    # Транзакции и суммарная сумма ВА (для таблиц-сводок и строки «Итого»)
-    transactions = get_transactions(deal)
+    # Транзакции-части с рассчитанными рублями; общая сумма ВА = сумме частей
+    transactions = computed_transactions(deal)
     va_total = sum(_to_float(t.get('va_amount', 0)) for t in transactions)
 
     deal_totals = dict(deal)
-    deal_totals['va_amount'] = va_total   # сводные суммы = сумма всех транзакций
+    deal_totals['va_amount'] = va_total   # «Итого» по ВА = сумма всех частей
     deal_totals['tx_hash']   = ''         # хэши подставляются построчно
+    # fiat_amount остаётся введённой общей суммой → идёт в «Итого» по рублям
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     deal_number = deal.get('deal_number', '0')

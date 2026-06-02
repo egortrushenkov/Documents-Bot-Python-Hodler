@@ -11,10 +11,10 @@ from states import ActForm
 from keyboards import (
     act_type_kb, companies_list_kb, va_type_kb, network_kb,
     kvvo_kb, skip_kb, confirm_act_kb, edit_act_fields_kb, back_to_main_kb,
-    add_tx_kb
+    add_tx_kb, split_mode_kb
 )
 import database as db
-from services.doc_generator import generate_docx
+from services.doc_generator import generate_docx, computed_transactions, _to_float
 from services.pdf_converter import convert_to_pdf
 
 router = Router()
@@ -48,28 +48,26 @@ DIRECTION_LABELS = {
 }
 
 
-def _transactions(data: dict) -> list:
-    """Текущий список транзакций (минимум одна — из основных полей)."""
-    txs = data.get("transactions")
-    if txs and len(txs) > 1:
-        return txs
-    return [{"va_amount": data.get("va_amount", ""), "tx_hash": data.get("tx_hash", "")}]
+def _tests_sum(data: dict) -> float:
+    """Сумма ВА уже введённых тест-транзакций (без остатка)."""
+    return sum(_to_float(t.get("va_amount", 0)) for t in data.get("transactions", []))
 
 
-def _va_total(data: dict) -> float:
-    total = 0.0
-    for t in _transactions(data):
-        try:
-            total += float(str(t.get("va_amount", "0")).replace(",", ".").replace(" ", ""))
-        except Exception:
-            pass
-    return total
+def _remainder(data: dict) -> float:
+    """Остаток ВА = общая сумма минус введённые тесты."""
+    return _to_float(data.get("va_amount", 0)) - _tests_sum(data)
+
+
+def _fmt(n: float) -> str:
+    """Аккуратный формат числа: без хвостовых нулей."""
+    return f"{n:.2f}".rstrip("0").rstrip(".")
 
 
 def deal_summary(data: dict, client: dict) -> str:
     act_type  = data.get("act_type", "sell")
     direction = DIRECTION_LABELS.get(act_type, act_type)
     doc_word  = "счёта" if act_type == "invoice" else "акта"
+    va_type   = data.get("va_type", "")
 
     lines = [
         f"<b>📄 Сводка {doc_word}</b>\n",
@@ -81,29 +79,28 @@ def deal_summary(data: dict, client: dict) -> str:
         f"<b>Дата исполнения:</b> {data.get('execution_date','—')}",
         f"",
         f"<b>Актив:</b> {data.get('va_type','—')} ({data.get('network','—')})",
-    ]
-
-    txs = _transactions(data)
-    if act_type != "invoice" and len(txs) > 1:
-        lines.append(f"<b>Транзакций:</b> {len(txs)}")
-        for i, t in enumerate(txs, 1):
-            lines.append(
-                f"  {i}) {t.get('va_amount','—')} {data.get('va_type','')} — "
-                f"<code>{t.get('tx_hash','—')}</code>"
-            )
-        lines.append(f"<b>Итого ВА:</b> {_va_total(data):g} {data.get('va_type','')}")
-    else:
-        lines.append(f"<b>Сумма ВА:</b> {data.get('va_amount','—')} {data.get('va_type','')}")
-
-    lines += [
+        f"<b>Сумма ВА:</b> {data.get('va_amount','—')} {va_type}",
         f"<b>Сумма RUB:</b> {data.get('fiat_amount','—')} RUB",
         f"<b>Курс:</b> {data.get('exchange_rate','—')}",
         f"<b>КВВО:</b> {data.get('kvvo','—')}",
+    ]
+
+    # Разбивка на транзакции (тесты + остаток) с рублями по курсу
+    rows = computed_transactions(data) if act_type != "invoice" else []
+    if len(rows) > 1:
+        lines.append(f"\n<b>Транзакций: {len(rows)}</b>")
+        for i, t in enumerate(rows, 1):
+            lines.append(
+                f"  {i}) {t['va_amount']} {va_type} = {_fmt(t['fiat_amount'])} RUB — "
+                f"<code>{t.get('tx_hash','—')}</code>"
+            )
+
+    lines += [
         f"",
         f"<b>Кошелёк клиента:</b>\n<code>{data.get('client_wallet','—')}</code>",
         f"<b>Кошелёк оператора:</b>\n<code>{data.get('operator_wallet','—')}</code>",
     ]
-    if act_type != "invoice" and len(txs) == 1:
+    if len(rows) <= 1 and act_type != "invoice":
         lines.append(f"<b>Хэш:</b>\n<code>{data.get('tx_hash','—')}</code>")
     lines += [
         f"",
@@ -436,12 +433,12 @@ async def _ask_operator_wallet(answer_fn, state):
 # ─── Step 12: Operator wallet ─────────────────────────────────────────────────
 
 async def _after_operator_wallet(answer_fn, state):
-    """Счёт-заявка не содержит хэшей транзакций — сразу к комиссии."""
+    """Счёт-заявка не дробится на транзакции — сразу к комиссии."""
     data = await state.get_data()
     if data.get("act_type") == "invoice":
         await _ask_commission(answer_fn, state)
     else:
-        await _ask_tx_hash(answer_fn, state)
+        await _ask_split_mode(answer_fn, state)
 
 
 @router.callback_query(ActForm.operator_wallet, F.data == "skip:operator_wallet")
@@ -456,79 +453,122 @@ async def input_op_wallet(msg: Message, state: FSMContext):
     await _after_operator_wallet(msg.answer, state)
 
 
-async def _ask_tx_hash(answer_fn, state):
-    await state.set_state(ActForm.tx_hash)
+# ─── Step 13: транзакции (одна / тест + остаток) ──────────────────────────────
+
+async def _ask_split_mode(answer_fn, state):
+    data = await state.get_data()
+    await state.set_state(ActForm.split_mode)
     await answer_fn(
-        "<b>Шаг: Хэш транзакции в блокчейне</b>\n"
-        "Введите tx hash (или <code>-</code> если ещё нет):",
-        reply_markup=skip_kb("skip:tx_hash", "Пропустить (заполнить позже)"),
-        parse_mode="HTML"
+        f"<b>Шаг: Транзакции</b>\n"
+        f"Общая сумма: <b>{data.get('va_amount','—')} {data.get('va_type','')}</b>\n\n"
+        f"Перевод одной транзакцией или разбить на части (например тест + остаток)?",
+        reply_markup=split_mode_kb(),
+        parse_mode="HTML",
     )
 
 
-# ─── Step 13: TX hash ─────────────────────────────────────────────────────────
+# — одной транзакцией —
+@router.callback_query(ActForm.split_mode, F.data == "tx:single")
+async def split_single(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(ActForm.tx_one_hash)
+    await cb.message.edit_text(
+        "<b>Хэш транзакции</b>\n"
+        "Введите tx hash (или <code>-</code> если ещё нет):",
+        reply_markup=skip_kb("tx:one_skip", "Пропустить (-)"),
+        parse_mode="HTML",
+    )
+    await cb.answer()
 
-@router.callback_query(ActForm.tx_hash, F.data == "skip:tx_hash")
-async def skip_tx_hash(cb: CallbackQuery, state: FSMContext):
-    await state.update_data(tx_hash="-")
-    await _init_transactions(state)
+
+async def _finish_single(state, tx_hash: str):
+    # одна транзакция = вся сумма; храним в основном поле (для правок) и списком
+    data = await state.get_data()
+    await state.update_data(
+        tx_hash=tx_hash,
+        transactions=[{"va_amount": data.get("va_amount", ""), "tx_hash": tx_hash}],
+    )
+
+
+@router.callback_query(ActForm.tx_one_hash, F.data == "tx:one_skip")
+async def single_skip_hash(cb: CallbackQuery, state: FSMContext):
+    await _finish_single(state, "-")
+    await _ask_commission(cb.message.edit_text, state)
+    await cb.answer()
+
+
+@router.message(ActForm.tx_one_hash)
+async def single_hash(msg: Message, state: FSMContext):
+    await _finish_single(state, msg.text.strip())
+    await _ask_commission(msg.answer, state)
+
+
+# — разбивка: тест(ы) + остаток —
+@router.callback_query(ActForm.split_mode, F.data == "tx:split")
+async def split_start(cb: CallbackQuery, state: FSMContext):
+    await state.update_data(transactions=[])   # сюда копятся тесты
     await _ask_add_tx(cb.message.edit_text, state)
     await cb.answer()
 
 
-@router.message(ActForm.tx_hash)
-async def input_tx_hash(msg: Message, state: FSMContext):
-    await state.update_data(tx_hash=msg.text.strip())
-    await _init_transactions(state)
-    await _ask_add_tx(msg.answer, state)
-
-
-# ─── Step 13b: несколько транзакций ───────────────────────────────────────────
-
-async def _init_transactions(state):
-    """Создаёт список транзакций из первой (основной) транзакции."""
-    data = await state.get_data()
-    await state.update_data(transactions=[{
-        "va_amount": data.get("va_amount", ""),
-        "tx_hash":   data.get("tx_hash", ""),
-    }])
-
-
 async def _ask_add_tx(answer_fn, state):
-    data = await state.get_data()
-    txs  = data.get("transactions", [])
+    data    = await state.get_data()
+    va_type = data.get("va_type", "")
+    total   = _to_float(data.get("va_amount", 0))
+    tests   = data.get("transactions", [])
+    rem     = _remainder(data)
     await state.set_state(ActForm.add_tx)
-    lines = [f"<b>Транзакций в акте: {len(txs)}</b>"]
-    for i, t in enumerate(txs, 1):
-        lines.append(f"  {i}) {t.get('va_amount','—')} {data.get('va_type','')} — <code>{t.get('tx_hash','—')}</code>")
-    lines.append("\nДобавить ещё одну транзакцию (строку в таблицу) или продолжить?")
-    await answer_fn("\n".join(lines), reply_markup=add_tx_kb(), parse_mode="HTML")
+    lines = [f"<b>Разбивка транзакций</b>", f"Всего: {_fmt(total)} {va_type}"]
+    for i, t in enumerate(tests, 1):
+        lines.append(f"  тест {i}) {t.get('va_amount','—')} {va_type} — <code>{t.get('tx_hash','—')}</code>")
+    lines.append(f"<b>Остаток: {_fmt(rem)} {va_type}</b>")
+    lines.append("\nДобавьте тест-транзакцию или завершите — остаток уйдёт отдельной строкой.")
+    await answer_fn("\n".join(lines), reply_markup=add_tx_kb(f"{_fmt(rem)} {va_type}"), parse_mode="HTML")
 
 
 @router.callback_query(ActForm.add_tx, F.data == "tx:add")
-async def add_tx_start(cb: CallbackQuery, state: FSMContext):
+async def add_test_start(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    rem  = _remainder(data)
     await state.set_state(ActForm.extra_va)
     await cb.message.edit_text(
-        "<b>Доп. транзакция — сумма ВА</b>\n"
-        "Введите сумму виртуального актива (например: 6287.726):",
-        parse_mode="HTML"
+        f"<b>Тест-транзакция — сумма {data.get('va_type','ВА')}</b>\n"
+        f"Должна быть меньше остатка <b>{_fmt(rem)}</b>.\n\n"
+        f"Введите сумму:",
+        parse_mode="HTML",
     )
     await cb.answer()
 
 
 @router.message(ActForm.extra_va)
-async def add_tx_va(msg: Message, state: FSMContext):
-    await state.update_data(_extra_va=msg.text.strip().replace(",", "."))
+async def add_test_va(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    rem  = _remainder(data)
+    val  = msg.text.strip().replace(",", ".").replace(" ", "")
+    try:
+        amount = float(val)
+    except ValueError:
+        await msg.answer("❌ Введите число, например: 100")
+        return
+    if amount <= 0:
+        await msg.answer("❌ Сумма должна быть больше 0.")
+        return
+    if amount >= rem:
+        await msg.answer(
+            f"❌ Сумма теста должна быть меньше остатка ({_fmt(rem)}) — "
+            f"остаток уйдёт отдельной строкой."
+        )
+        return
+    await state.update_data(_extra_va=val)
     await state.set_state(ActForm.extra_tx_hash)
     await msg.answer(
-        "<b>Доп. транзакция — хэш</b>\n"
+        "<b>Тест-транзакция — хэш</b>\n"
         "Введите tx hash (или <code>-</code> если ещё нет):",
         reply_markup=skip_kb("tx:extra_skip_hash", "Пропустить (-)"),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
 
 
-async def _append_transaction(state, tx_hash: str):
+async def _append_test(state, tx_hash: str):
     data = await state.get_data()
     txs  = list(data.get("transactions", []))
     txs.append({"va_amount": data.get("_extra_va", ""), "tx_hash": tx_hash})
@@ -536,22 +576,54 @@ async def _append_transaction(state, tx_hash: str):
 
 
 @router.callback_query(ActForm.extra_tx_hash, F.data == "tx:extra_skip_hash")
-async def add_tx_skip_hash(cb: CallbackQuery, state: FSMContext):
-    await _append_transaction(state, "-")
+async def add_test_skip_hash(cb: CallbackQuery, state: FSMContext):
+    await _append_test(state, "-")
     await _ask_add_tx(cb.message.edit_text, state)
     await cb.answer()
 
 
 @router.message(ActForm.extra_tx_hash)
-async def add_tx_hash(msg: Message, state: FSMContext):
-    await _append_transaction(state, msg.text.strip())
+async def add_test_hash(msg: Message, state: FSMContext):
+    await _append_test(state, msg.text.strip())
     await _ask_add_tx(msg.answer, state)
 
 
 @router.callback_query(ActForm.add_tx, F.data == "tx:done")
-async def add_tx_done(cb: CallbackQuery, state: FSMContext):
+async def split_done(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    rem  = _remainder(data)
+    if rem <= 0:
+        await cb.answer("Остаток нулевой — уберите лишние тесты", show_alert=True)
+        return
+    await state.update_data(_remainder_va=_fmt(rem))
+    await state.set_state(ActForm.remainder_hash)
+    await cb.message.edit_text(
+        f"<b>Хэш перевода остатка ({_fmt(rem)} {data.get('va_type','')})</b>\n"
+        f"Введите tx hash (или <code>-</code> если ещё нет):",
+        reply_markup=skip_kb("tx:rem_skip", "Пропустить (-)"),
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+async def _finish_split(state, tx_hash: str):
+    data = await state.get_data()
+    txs  = list(data.get("transactions", []))   # тесты
+    txs.append({"va_amount": data.get("_remainder_va", ""), "tx_hash": tx_hash})  # остаток последним
+    await state.update_data(transactions=txs)
+
+
+@router.callback_query(ActForm.remainder_hash, F.data == "tx:rem_skip")
+async def remainder_skip_hash(cb: CallbackQuery, state: FSMContext):
+    await _finish_split(state, "-")
     await _ask_commission(cb.message.edit_text, state)
     await cb.answer()
+
+
+@router.message(ActForm.remainder_hash)
+async def remainder_input_hash(msg: Message, state: FSMContext):
+    await _finish_split(state, msg.text.strip())
+    await _ask_commission(msg.answer, state)
 
 
 async def _ask_commission(answer_fn, state):
@@ -718,7 +790,7 @@ async def generate_act(cb: CallbackQuery, state: FSMContext):
         act_type  = data.get("act_type","sell")
         doc_word  = "Счёт-заявка" if act_type == "invoice" else "Акт"
         direction = DIRECTION_LABELS.get(act_type, act_type)
-        n_tx      = len(_transactions(data))
+        n_tx      = len(data.get("transactions", []))
         tx_line   = f"\nТранзакций: {n_tx}" if act_type != "invoice" and n_tx > 1 else ""
         caption   = (
             f"✅ <b>{doc_word} №{data.get('deal_number')} от {data.get('deal_date')}</b>\n"

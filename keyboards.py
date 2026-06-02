@@ -126,10 +126,17 @@ def act_type_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def add_tx_kb() -> InlineKeyboardMarkup:
+def split_mode_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="➕ Добавить ещё транзакцию", callback_data="tx:add"))
-    builder.row(InlineKeyboardButton(text="➡️ Продолжить",              callback_data="tx:done"))
+    builder.row(InlineKeyboardButton(text="📦 Одной транзакцией",          callback_data="tx:single"))
+    builder.row(InlineKeyboardButton(text="✂️ Разбить (тест + остаток)",   callback_data="tx:split"))
+    return builder.as_markup()
+
+
+def add_tx_kb(remainder: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="➕ Добавить тест-транзакцию", callback_data="tx:add"))
+    builder.row(InlineKeyboardButton(text=f"✅ Завершить (остаток {remainder})", callback_data="tx:done"))
     return builder.as_markup()
 
 

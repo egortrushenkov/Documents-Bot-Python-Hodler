@@ -158,17 +158,33 @@ def network_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def kvvo_kb() -> InlineKeyboardMarkup:
-    codes = [
-        ("99082", "99082 — прочие операции с ВА"),
-        ("99081", "99081 — обмен ВА"),
-        ("10100", "10100 — покупка ин. валюты"),
-        ("20100", "20100 — продажа ин. валюты"),
-    ]
+BUILTIN_KVVO = [
+    ("99082", "99082 — прочие операции с ВА"),
+    ("99081", "99081 — обмен ВА"),
+    ("10100", "10100 — покупка ин. валюты"),
+    ("20100", "20100 — продажа ин. валюты"),
+]
+BUILTIN_KVVO_CODES = {c for c, _ in BUILTIN_KVVO}
+
+
+def kvvo_kb(custom_codes: List[str] | None = None) -> InlineKeyboardMarkup:
+    custom_codes = custom_codes or []
     builder = InlineKeyboardBuilder()
-    for code, label in codes:
+    for code, label in BUILTIN_KVVO:
         builder.row(InlineKeyboardButton(text=label, callback_data=f"kvvo:{code}"))
+    for code in custom_codes:
+        builder.row(InlineKeyboardButton(text=code, callback_data=f"kvvo:{code}"))
     builder.row(InlineKeyboardButton(text="✏️ Ввести другой", callback_data="kvvo:custom"))
+    if custom_codes:
+        builder.row(InlineKeyboardButton(text="🗑 Удалить свой КВВО", callback_data="kvvo:manage"))
+    return builder.as_markup()
+
+
+def kvvo_manage_kb(custom_codes: List[str]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for code in custom_codes:
+        builder.row(InlineKeyboardButton(text=f"🗑 {code}", callback_data=f"kvvo_del:{code}"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад к выбору", callback_data="kvvo:back"))
     return builder.as_markup()
 
 

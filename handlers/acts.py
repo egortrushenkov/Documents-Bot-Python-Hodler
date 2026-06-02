@@ -10,7 +10,8 @@ from aiogram.fsm.context import FSMContext
 from states import ActForm
 from keyboards import (
     act_type_kb, companies_list_kb, va_type_kb, network_kb,
-    kvvo_kb, skip_kb, confirm_act_kb, edit_act_fields_kb, back_to_main_kb,
+    kvvo_kb, kvvo_manage_kb, BUILTIN_KVVO_CODES,
+    skip_kb, confirm_act_kb, edit_act_fields_kb, back_to_main_kb,
     add_tx_kb, split_mode_kb
 )
 import database as db
@@ -361,13 +362,18 @@ async def input_rate(msg: Message, state: FSMContext):
     await _ask_kvvo(msg.answer, state)
 
 
+KVVO_PROMPT = "<b>Шаг: КВВО (код вида валютной операции)</b>\nВыберите или введите свой:"
+
+
+async def _custom_kvvo() -> list:
+    """Сохранённые пользователем коды (без встроенных)."""
+    codes = await db.get_kvvo_codes()
+    return [c for c in codes if c not in BUILTIN_KVVO_CODES]
+
+
 async def _ask_kvvo(answer_fn, state):
     await state.set_state(ActForm.kvvo)
-    await answer_fn(
-        "<b>Шаг: КВВО (код вида валютной операции)</b>\nВыберите или введите свой:",
-        reply_markup=kvvo_kb(),
-        parse_mode="HTML"
-    )
+    await answer_fn(KVVO_PROMPT, reply_markup=kvvo_kb(await _custom_kvvo()), parse_mode="HTML")
 
 
 # ─── Step 10: KVVO ───────────────────────────────────────────────────────────
@@ -376,7 +382,19 @@ async def _ask_kvvo(answer_fn, state):
 async def step_kvvo(cb: CallbackQuery, state: FSMContext):
     val = cb.data.split(":", 1)[1]
     if val == "custom":
-        await cb.message.edit_text("Введите код КВВО:")
+        await cb.message.edit_text("Введите код КВВО (он сохранится в списке):")
+        await cb.answer()
+        return
+    if val == "manage":
+        await cb.message.edit_text(
+            "Удалить свой КВВО:", reply_markup=kvvo_manage_kb(await _custom_kvvo())
+        )
+        await cb.answer()
+        return
+    if val == "back":
+        await cb.message.edit_text(
+            KVVO_PROMPT, reply_markup=kvvo_kb(await _custom_kvvo()), parse_mode="HTML"
+        )
         await cb.answer()
         return
     await state.update_data(kvvo=val)
@@ -384,9 +402,24 @@ async def step_kvvo(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+@router.callback_query(ActForm.kvvo, F.data.startswith("kvvo_del:"))
+async def delete_kvvo(cb: CallbackQuery, state: FSMContext):
+    code = cb.data.split(":", 1)[1]
+    await db.delete_kvvo(code)
+    custom = await _custom_kvvo()
+    if custom:
+        await cb.message.edit_text("Удалить свой КВВО:", reply_markup=kvvo_manage_kb(custom))
+    else:
+        await cb.message.edit_text(KVVO_PROMPT, reply_markup=kvvo_kb(custom), parse_mode="HTML")
+    await cb.answer(f"Удалён {code}")
+
+
 @router.message(ActForm.kvvo)
 async def input_kvvo(msg: Message, state: FSMContext):
-    await state.update_data(kvvo=msg.text.strip())
+    code = msg.text.strip()
+    if code and code not in BUILTIN_KVVO_CODES:
+        await db.add_kvvo(code)   # авто-сохранение для будущих сделок
+    await state.update_data(kvvo=code)
     await _ask_client_wallet(msg.answer, state)
 
 

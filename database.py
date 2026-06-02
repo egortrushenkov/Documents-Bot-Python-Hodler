@@ -35,6 +35,11 @@ async def init_db():
             id          INTEGER PRIMARY KEY,
             last_number INTEGER DEFAULT 499
         );
+
+        CREATE TABLE IF NOT EXISTS kvvo_codes (
+            code       TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         """)
 
         # Default operator data
@@ -164,3 +169,26 @@ async def peek_next_number() -> int:
         ) as cur:
             row = await cur.fetchone()
     return (row[0] if row else 499) + 1
+
+
+# ─── Custom KVVO codes ────────────────────────────────────────────────────────
+
+async def get_kvvo_codes() -> List[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT code FROM kvvo_codes ORDER BY code") as cur:
+            rows = await cur.fetchall()
+    return [r[0] for r in rows]
+
+
+async def add_kvvo(code: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO kvvo_codes (code) VALUES (?)", (code,)
+        )
+        await db.commit()
+
+
+async def delete_kvvo(code: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM kvvo_codes WHERE code=?", (code,))
+        await db.commit()

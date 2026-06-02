@@ -5,6 +5,8 @@ Telegram-бот для автоматической генерации акто�
 ## Что умеет
 
 - **2 типа акта**: «Продаём ВА клиенту» и «Покупаем ВА у клиента»
+- **Счёт-заявка**: отдельный документ на покупку клиентом (`template_invoice_buy`) — формируется до акта
+- **Несколько транзакций в акте**: добавляются строками в таблицу, сумма ВА суммируется в «Итого»
 - **База компаний**: добавить один раз — реквизиты подтянутся автоматически
 - **Автодата**: сегодняшнее число по умолчанию, можно изменить
 - **Автономер**: счётчик заявок с возможностью ручного ввода
@@ -33,11 +35,14 @@ nano .env
 
 Заполнить `BOT_TOKEN` и `ADMIN_IDS`.
 
-### 3. Положить оригинальные шаблоны
+### 3. Положить готовые шаблоны
 
-В папку `templates/` поместить оба файла:
-- `Акт_покупке_у_нас_ЮЛ.docx`
-- `Акт_продаже_нам_от_ЮЛ.docx`
+В папку `templates/` поместить заполненные плейсхолдерами `{{...}}` файлы:
+- `template_buy.docx` — клиент покупает ВА у нас
+- `template_sell.docx` — клиент продаёт ВА нам
+- `template_invoice_buy.docx` — счёт-заявка на покупку клиентом
+
+Шаблоны создаются вручную (см. список плейсхолдеров ниже).
 
 ### 4. Запустить
 
@@ -45,9 +50,7 @@ nano .env
 docker compose up -d --build
 ```
 
-При первом запуске автоматически:
-- подготовятся шаблоны (`prepare_templates.py`)
-- создастся БД с реквизитами оператора по умолчанию
+При первом запуске автоматически создастся БД с реквизитами оператора по умолчанию.
 
 ---
 
@@ -60,10 +63,7 @@ docker compose up -d --build
 ```bash
 pip install -r requirements.txt
 
-# Подготовить шаблоны (один раз)
-python prepare_templates.py
-
-# Запустить бота
+# Запустить бота (шаблоны должны уже лежать в templates/)
 python bot.py
 ```
 
@@ -78,7 +78,6 @@ hodler-doc-bot/
 ├── database.py             # SQLite: компании, настройки, счётчик
 ├── states.py               # FSM-состояния
 ├── keyboards.py            # Все клавиатуры
-├── prepare_templates.py    # Подготовка шаблонов (один раз)
 │
 ├── handlers/
 │   ├── menu.py             # Главное меню
@@ -91,10 +90,9 @@ hodler-doc-bot/
 │   └── pdf_converter.py    # Конвертация DOCX → PDF
 │
 ├── templates/
-│   ├── Акт_покупке_у_нас_ЮЛ.docx   # Оригинал (не трогать)
-│   ├── Акт_продаже_нам_от_ЮЛ.docx  # Оригинал (не трогать)
-│   ├── template_sell.docx           # Генерируется автоматически
-│   └── template_buy.docx            # Генерируется автоматически
+│   ├── template_buy.docx           # Клиент покупает ВА у нас
+│   ├── template_sell.docx          # Клиент продаёт ВА нам
+│   └── template_invoice_buy.docx   # Счёт-заявка на покупку клиентом
 │
 ├── data/
 │   ├── hodler.db           # SQLite-база
@@ -154,7 +152,7 @@ hodler-doc-bot/
 | `{{OP_WALLET}}` | Кошелёк оператора |
 
 ### Оператор (`OP_*`)
-`{{OP_FULL_NAME}}`, `{{OP_SHORT_NAME}}`, `{{OP_INN}}`, `{{OP_KPP}}`, `{{OP_ADDRESS}}`, `{{OP_LICENSE}}`, `{{OP_BANK_NAME}}`, `{{OP_BANK_ACCOUNT}}`, `{{OP_BANK_BIK}}`, `{{OP_DIRECTOR}}`
+`{{OP_FULL_NAME}}`, `{{OP_SHORT_NAME}}`, `{{OP_INN}}`, `{{OP_KPP}}`, `{{OP_ADDRESS}}`, `{{OP_ADDRESS_FULL}}`, `{{OP_LEGAL_ADDRESS}}`, `{{OP_LICENSE}}`, `{{OP_KIO}}`, `{{OP_INN_RF}}`, `{{OP_KPP_RF}}`, `{{OP_BANK_NAME}}`, `{{OP_BANK_ACCOUNT}}`, `{{OP_BANK_BIK}}`, `{{OP_DIRECTOR}}`
 
 ### Клиент (`CL_*`)
 `{{CL_FULL_NAME}}`, `{{CL_SHORT_NAME}}`, `{{CL_INN}}`, `{{CL_KPP}}`, `{{CL_REG_NUMBER}}`, `{{CL_ADDRESS}}`, `{{CL_KIO}}`, `{{CL_INN_RF}}`, `{{CL_KPP_RF}}`, `{{CL_BANK_NAME}}`, `{{CL_BANK_ACCOUNT}}`, `{{CL_BANK_BIK}}`
@@ -163,10 +161,10 @@ hodler-doc-bot/
 
 ## Обновление шаблонов
 
-Если изменились оригинальные DOCX:
-1. Заменить файлы в `templates/`
-2. Запустить `python prepare_templates.py`
-3. Перезапустить бота
+Шаблоны редактируются вручную в Word. Чтобы значения подставлялись автоматически,
+используйте плейсхолдеры `{{VARIABLE}}` (см. список ниже).
+1. Отредактировать `.docx` в `templates/`
+2. Перезапустить бота
 
 ---
 
@@ -176,7 +174,6 @@ hodler-doc-bot/
 # На сервере
 cd /opt/hodler-doc-bot
 pip install -r requirements.txt
-python prepare_templates.py
 
 # Создать systemd-сервис
 sudo nano /etc/systemd/system/hodler-bot.service

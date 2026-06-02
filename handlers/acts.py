@@ -10,7 +10,8 @@ from aiogram.fsm.context import FSMContext
 from states import ActForm
 from keyboards import (
     act_type_kb, companies_list_kb, va_type_kb, network_kb,
-    kvvo_kb, skip_kb, confirm_act_kb, edit_act_fields_kb, back_to_main_kb
+    kvvo_kb, skip_kb, confirm_act_kb, edit_act_fields_kb, back_to_main_kb,
+    add_tx_kb
 )
 import database as db
 from services.doc_generator import generate_docx
@@ -40,12 +41,38 @@ FIELD_LABELS = {
 }
 
 
+DIRECTION_LABELS = {
+    "sell":    "📤 Продаём ВА клиенту (покупка у нас)",
+    "buy":     "📥 Покупаем ВА у клиента (продажа нам)",
+    "invoice": "🧾 Счёт-заявка на покупку клиентом",
+}
+
+
+def _transactions(data: dict) -> list:
+    """Текущий список транзакций (минимум одна — из основных полей)."""
+    txs = data.get("transactions")
+    if txs and len(txs) > 1:
+        return txs
+    return [{"va_amount": data.get("va_amount", ""), "tx_hash": data.get("tx_hash", "")}]
+
+
+def _va_total(data: dict) -> float:
+    total = 0.0
+    for t in _transactions(data):
+        try:
+            total += float(str(t.get("va_amount", "0")).replace(",", ".").replace(" ", ""))
+        except Exception:
+            pass
+    return total
+
+
 def deal_summary(data: dict, client: dict) -> str:
-    act_type = data.get("act_type", "sell")
-    direction = "📤 Продаём ВА клиенту" if act_type == "sell" else "📥 Покупаем ВА у клиента"
+    act_type  = data.get("act_type", "sell")
+    direction = DIRECTION_LABELS.get(act_type, act_type)
+    doc_word  = "счёта" if act_type == "invoice" else "акта"
 
     lines = [
-        f"<b>📄 Сводка акта</b>\n",
+        f"<b>📄 Сводка {doc_word}</b>\n",
         f"<b>Тип:</b> {direction}",
         f"<b>Клиент:</b> {client.get('short_name','—')}",
         f"",
@@ -54,14 +81,31 @@ def deal_summary(data: dict, client: dict) -> str:
         f"<b>Дата исполнения:</b> {data.get('execution_date','—')}",
         f"",
         f"<b>Актив:</b> {data.get('va_type','—')} ({data.get('network','—')})",
-        f"<b>Сумма ВА:</b> {data.get('va_amount','—')} {data.get('va_type','')}",
+    ]
+
+    txs = _transactions(data)
+    if act_type != "invoice" and len(txs) > 1:
+        lines.append(f"<b>Транзакций:</b> {len(txs)}")
+        for i, t in enumerate(txs, 1):
+            lines.append(
+                f"  {i}) {t.get('va_amount','—')} {data.get('va_type','')} — "
+                f"<code>{t.get('tx_hash','—')}</code>"
+            )
+        lines.append(f"<b>Итого ВА:</b> {_va_total(data):g} {data.get('va_type','')}")
+    else:
+        lines.append(f"<b>Сумма ВА:</b> {data.get('va_amount','—')} {data.get('va_type','')}")
+
+    lines += [
         f"<b>Сумма RUB:</b> {data.get('fiat_amount','—')} RUB",
         f"<b>Курс:</b> {data.get('exchange_rate','—')}",
         f"<b>КВВО:</b> {data.get('kvvo','—')}",
         f"",
         f"<b>Кошелёк клиента:</b>\n<code>{data.get('client_wallet','—')}</code>",
         f"<b>Кошелёк оператора:</b>\n<code>{data.get('operator_wallet','—')}</code>",
-        f"<b>Хэш:</b>\n<code>{data.get('tx_hash','—')}</code>",
+    ]
+    if act_type != "invoice" and len(txs) == 1:
+        lines.append(f"<b>Хэш:</b>\n<code>{data.get('tx_hash','—')}</code>")
+    lines += [
         f"",
         f"<b>Комиссия (RUB):</b> {data.get('commission_fiat','0%')}",
         f"<b>Комиссия (ВА):</b> {data.get('commission_va','0%')}",
@@ -391,16 +435,25 @@ async def _ask_operator_wallet(answer_fn, state):
 
 # ─── Step 12: Operator wallet ─────────────────────────────────────────────────
 
+async def _after_operator_wallet(answer_fn, state):
+    """Счёт-заявка не содержит хэшей транзакций — сразу к комиссии."""
+    data = await state.get_data()
+    if data.get("act_type") == "invoice":
+        await _ask_commission(answer_fn, state)
+    else:
+        await _ask_tx_hash(answer_fn, state)
+
+
 @router.callback_query(ActForm.operator_wallet, F.data == "skip:operator_wallet")
 async def skip_op_wallet(cb: CallbackQuery, state: FSMContext):
-    await _ask_tx_hash(cb.message.edit_text, state)
+    await _after_operator_wallet(cb.message.edit_text, state)
     await cb.answer()
 
 
 @router.message(ActForm.operator_wallet)
 async def input_op_wallet(msg: Message, state: FSMContext):
     await state.update_data(operator_wallet=msg.text.strip())
-    await _ask_tx_hash(msg.answer, state)
+    await _after_operator_wallet(msg.answer, state)
 
 
 async def _ask_tx_hash(answer_fn, state):
@@ -418,14 +471,87 @@ async def _ask_tx_hash(answer_fn, state):
 @router.callback_query(ActForm.tx_hash, F.data == "skip:tx_hash")
 async def skip_tx_hash(cb: CallbackQuery, state: FSMContext):
     await state.update_data(tx_hash="-")
-    await _ask_commission(cb.message.edit_text, state)
+    await _init_transactions(state)
+    await _ask_add_tx(cb.message.edit_text, state)
     await cb.answer()
 
 
 @router.message(ActForm.tx_hash)
 async def input_tx_hash(msg: Message, state: FSMContext):
     await state.update_data(tx_hash=msg.text.strip())
-    await _ask_commission(msg.answer, state)
+    await _init_transactions(state)
+    await _ask_add_tx(msg.answer, state)
+
+
+# ─── Step 13b: несколько транзакций ───────────────────────────────────────────
+
+async def _init_transactions(state):
+    """Создаёт список транзакций из первой (основной) транзакции."""
+    data = await state.get_data()
+    await state.update_data(transactions=[{
+        "va_amount": data.get("va_amount", ""),
+        "tx_hash":   data.get("tx_hash", ""),
+    }])
+
+
+async def _ask_add_tx(answer_fn, state):
+    data = await state.get_data()
+    txs  = data.get("transactions", [])
+    await state.set_state(ActForm.add_tx)
+    lines = [f"<b>Транзакций в акте: {len(txs)}</b>"]
+    for i, t in enumerate(txs, 1):
+        lines.append(f"  {i}) {t.get('va_amount','—')} {data.get('va_type','')} — <code>{t.get('tx_hash','—')}</code>")
+    lines.append("\nДобавить ещё одну транзакцию (строку в таблицу) или продолжить?")
+    await answer_fn("\n".join(lines), reply_markup=add_tx_kb(), parse_mode="HTML")
+
+
+@router.callback_query(ActForm.add_tx, F.data == "tx:add")
+async def add_tx_start(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(ActForm.extra_va)
+    await cb.message.edit_text(
+        "<b>Доп. транзакция — сумма ВА</b>\n"
+        "Введите сумму виртуального актива (например: 6287.726):",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@router.message(ActForm.extra_va)
+async def add_tx_va(msg: Message, state: FSMContext):
+    await state.update_data(_extra_va=msg.text.strip().replace(",", "."))
+    await state.set_state(ActForm.extra_tx_hash)
+    await msg.answer(
+        "<b>Доп. транзакция — хэш</b>\n"
+        "Введите tx hash (или <code>-</code> если ещё нет):",
+        reply_markup=skip_kb("tx:extra_skip_hash", "Пропустить (-)"),
+        parse_mode="HTML"
+    )
+
+
+async def _append_transaction(state, tx_hash: str):
+    data = await state.get_data()
+    txs  = list(data.get("transactions", []))
+    txs.append({"va_amount": data.get("_extra_va", ""), "tx_hash": tx_hash})
+    await state.update_data(transactions=txs)
+
+
+@router.callback_query(ActForm.extra_tx_hash, F.data == "tx:extra_skip_hash")
+async def add_tx_skip_hash(cb: CallbackQuery, state: FSMContext):
+    await _append_transaction(state, "-")
+    await _ask_add_tx(cb.message.edit_text, state)
+    await cb.answer()
+
+
+@router.message(ActForm.extra_tx_hash)
+async def add_tx_hash(msg: Message, state: FSMContext):
+    await _append_transaction(state, msg.text.strip())
+    await _ask_add_tx(msg.answer, state)
+
+
+@router.callback_query(ActForm.add_tx, F.data == "tx:done")
+async def add_tx_done(cb: CallbackQuery, state: FSMContext):
+    await _ask_commission(cb.message.edit_text, state)
+    await cb.answer()
 
 
 async def _ask_commission(answer_fn, state):
@@ -590,11 +716,14 @@ async def generate_act(cb: CallbackQuery, state: FSMContext):
             pdf_err = str(e)
 
         act_type  = data.get("act_type","sell")
-        direction = "Продажа клиенту" if act_type == "sell" else "Покупка у клиента"
+        doc_word  = "Счёт-заявка" if act_type == "invoice" else "Акт"
+        direction = DIRECTION_LABELS.get(act_type, act_type)
+        n_tx      = len(_transactions(data))
+        tx_line   = f"\nТранзакций: {n_tx}" if act_type != "invoice" and n_tx > 1 else ""
         caption   = (
-            f"✅ <b>Акт №{data.get('deal_number')} от {data.get('deal_date')}</b>\n"
+            f"✅ <b>{doc_word} №{data.get('deal_number')} от {data.get('deal_date')}</b>\n"
             f"Тип: {direction}\n"
-            f"Клиент: {client.get('short_name')}"
+            f"Клиент: {client.get('short_name')}{tx_line}"
         )
 
         await cb.message.answer_document(
@@ -621,8 +750,7 @@ async def generate_act(cb: CallbackQuery, state: FSMContext):
     except FileNotFoundError as e:
         await cb.message.answer(
             f"❌ <b>Шаблон не найден</b>\n\n"
-            f"Запустите на сервере:\n"
-            f"<code>python prepare_templates.py</code>\n\n"
+            f"Проверьте, что нужный .docx лежит в папке <code>templates/</code>.\n\n"
             f"Детали: {e}",
             parse_mode="HTML"
         )

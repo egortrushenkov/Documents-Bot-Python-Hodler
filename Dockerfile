@@ -14,7 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Подготовка шаблонов при первом запуске
 RUN mkdir -p data/output templates
 
-CMD ["sh", "-c", "python prepare_templates.py && python bot.py"]
+CMD ["python", "bot.py"]

@@ -21,7 +21,7 @@ class CompanyForm(StatesGroup):
 
 class ActForm(StatesGroup):
     """Создание акта"""
-    select_type      = State()   # sell / buy
+    select_type      = State()   # sell / buy / invoice
     select_company   = State()   # выбор из списка
     deal_number      = State()
     deal_date        = State()
@@ -34,6 +34,9 @@ class ActForm(StatesGroup):
     client_wallet    = State()
     operator_wallet  = State()
     tx_hash          = State()
+    add_tx           = State()   # добавить ещё транзакцию / продолжить
+    extra_va         = State()   # сумма ВА доп. транзакции
+    extra_tx_hash    = State()   # хэш доп. транзакции
     commission_fiat  = State()
     commission_va    = State()
     execution_date   = State()

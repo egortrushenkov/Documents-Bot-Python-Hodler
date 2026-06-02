@@ -3,10 +3,14 @@
 Заменяет плейсхолдеры по одному рану — не трогает раны с картинками.
 """
 import os
+import copy
 import shutil
 from datetime import datetime
 from docx import Document
-from config import TEMPLATES_DIR, OUTPUT_DIR, TEMPLATE_SELL, TEMPLATE_BUY
+from config import (
+    TEMPLATES_DIR, OUTPUT_DIR,
+    TEMPLATE_SELL, TEMPLATE_BUY, TEMPLATE_INVOICE_BUY,
+)
 
 WP_NS = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
 
@@ -25,18 +29,48 @@ def _has_drawing(run) -> bool:
     )
 
 
+def _s(v) -> str:
+    return str(v) if v is not None else ''
+
+
 def _replace_in_doc(doc: Document, replacements: dict):
     """
-    Заменяет плейсхолдеры в каждом ране отдельно.
-    Раны с картинками пропускает.
+    Заменяет плейсхолдеры в параграфе с учётом того, что в Word плейсхолдер
+    может быть разбит на несколько ранов (например `{{OP_`, `KIO`, `}}`).
+    Параграфы с картинками не склеиваются — там замена идёт поран­но.
     """
+    def _flush(group):
+        # Склеивает группу соседних текстовых ранов и заменяет в ней плейсхолдеры
+        if not group:
+            return
+        gfull = ''.join(r.text or '' for r in group)
+        if '{{' not in gfull:
+            return
+        new = gfull
+        for k, v in replacements.items():
+            if k in new:
+                new = new.replace(k, _s(v))
+        if new != gfull:
+            group[0].text = new
+            for r in group[1:]:
+                r.text = ''
+
     def process_para(para):
-        for run in para.runs:
-            if _has_drawing(run) or not run.text:
-                continue
-            for k, v in replacements.items():
-                if k in run.text:
-                    run.text = run.text.replace(k, str(v) if v is not None else '')
+        runs = para.runs
+        if not runs:
+            return
+        if '{{' not in ''.join(r.text or '' for r in runs):
+            return
+        # Группируем подряд идущие текстовые раны; раны-картинки разделяют группы,
+        # чтобы текст не «перепрыгивал» через изображение (подпись/печать).
+        group = []
+        for r in runs:
+            if _has_drawing(r):
+                _flush(group)
+                group = []
+            else:
+                group.append(r)
+        _flush(group)
 
     for para in doc.paragraphs:
         process_para(para)
@@ -80,9 +114,10 @@ def build_replacements(deal: dict, op: dict, client: dict) -> dict:
     kvvo           = deal.get('kvvo', '99082')
     act_type       = deal.get('act_type', 'sell')
     deal_number    = str(deal.get('deal_number', ''))
+    # 'buy' = клиент продаёт нам; 'sell'/'invoice' = клиент покупает у нас
     operation_type = (
-        'Покупка виртуальных активов' if act_type == 'sell'
-        else 'Продажа виртуальных активов'
+        'Продажа виртуальных активов' if act_type == 'buy'
+        else 'Покупка виртуальных активов'
     )
 
     return {
@@ -139,16 +174,131 @@ def build_replacements(deal: dict, op: dict, client: dict) -> dict:
     }
 
 
+def _to_float(value) -> float:
+    try:
+        return float(str(value).replace(',', '.').replace(' ', ''))
+    except Exception:
+        return 0.0
+
+
+def get_transactions(deal: dict) -> list:
+    """
+    Список транзакций. Несколько — только если их явно добавили (>1).
+    Для одной транзакции берём текущие поля сделки (так работает ручное
+    редактирование суммы/хэша через меню правок).
+    """
+    txs = deal.get('transactions')
+    if txs and len(txs) > 1:
+        return txs
+    return [{
+        'va_amount': deal.get('va_amount', '0'),
+        'tx_hash':   deal.get('tx_hash', ''),
+    }]
+
+
+def _row_text(row) -> str:
+    return ''.join(cell.text for cell in row.cells)
+
+
+def _merge_row_runs(row):
+    """Склеивает раны в каждой ячейке строки — плейсхолдеры становятся целыми."""
+    for cell in row.cells:
+        for para in cell.paragraphs:
+            runs = [r for r in para.runs if not _has_drawing(r)]
+            if not runs:
+                continue
+            full = ''.join(r.text or '' for r in runs)
+            if full:
+                runs[0].text = full
+                for r in runs[1:]:
+                    r.text = ''
+
+
+def _fill_tx_row(row, tx: dict, is_first: bool):
+    """Подставляет в строку-транзакцию её сумму ВА и хэш."""
+    va = format_number(tx.get('va_amount', '0'))
+    mapping = {
+        '{{VA_AMOUNT}}':       va,
+        '{{VA_AMOUNT_SHORT}}': va,
+        '{{TX_HASH}}':         tx.get('tx_hash', '') or '',
+    }
+    for cell in row.cells:
+        # Сумма RUB показывается один раз (в первой строке); в доп. строках — пусто
+        if not is_first and '{{FIAT_AMOUNT}}' in cell.text:
+            for para in cell.paragraphs:
+                for r in para.runs:
+                    r.text = ''
+            continue
+        for para in cell.paragraphs:
+            for r in para.runs:
+                if _has_drawing(r) or not r.text:
+                    continue
+                for k, v in mapping.items():
+                    if k in r.text:
+                        r.text = r.text.replace(k, v)
+
+
+def _expand_transactions(doc: Document, transactions: list):
+    """
+    Находит таблицу транзакций (строку с {{TX_HASH}}) и клонирует строку данных
+    по числу транзакций. Строка «Итого» остаётся для подстановки суммарных значений.
+    """
+    for table in doc.tables:
+        data_idx = None
+        for i, row in enumerate(table.rows):
+            if '{{TX_HASH}}' in _row_text(row):
+                data_idx = i
+                break
+        if data_idx is None:
+            continue
+
+        data_row = table.rows[data_idx]
+        _merge_row_runs(data_row)
+
+        # Клонируем строку данных для второй и последующих транзакций
+        tr = data_row._tr
+        last = tr
+        for _ in range(len(transactions) - 1):
+            new_tr = copy.deepcopy(tr)
+            last.addnext(new_tr)
+            last = new_tr
+
+        for j, tx in enumerate(transactions):
+            _fill_tx_row(table.rows[data_idx + j], tx, is_first=(j == 0))
+
+        # Строка «Итого» идёт сразу после блока транзакций
+        total_idx = data_idx + len(transactions)
+        if total_idx < len(table.rows):
+            _merge_row_runs(table.rows[total_idx])
+        return  # таблица транзакций одна
+
+
 def generate_docx(deal: dict, op: dict, client: dict) -> str:
-    act_type      = deal.get('act_type', 'sell')
-    template_name = TEMPLATE_SELL if act_type == 'sell' else TEMPLATE_BUY
+    act_type = deal.get('act_type', 'sell')
+    # act_type 'sell'    = мы продаём ВА клиенту = клиент ПОКУПАЕТ у нас → template_buy
+    # act_type 'buy'     = мы покупаем ВА у клиента = клиент ПРОДАЁТ нам  → template_sell
+    # act_type 'invoice' = счёт-заявка на покупку клиентом              → template_invoice_buy
+    if act_type == 'invoice':
+        template_name, direction = TEMPLATE_INVOICE_BUY, 'invoice_buy'
+    elif act_type == 'sell':
+        template_name, direction = TEMPLATE_BUY, 'buy'
+    else:
+        template_name, direction = TEMPLATE_SELL, 'sell'
     template_path = os.path.join(TEMPLATES_DIR, template_name)
 
     if not os.path.exists(template_path):
         raise FileNotFoundError(
             f"Шаблон не найден: {template_path}\n"
-            "Запустите: python prepare_templates.py"
+            f"Положите файл {template_name} в папку {TEMPLATES_DIR}/"
         )
+
+    # Транзакции и суммарная сумма ВА (для таблиц-сводок и строки «Итого»)
+    transactions = get_transactions(deal)
+    va_total = sum(_to_float(t.get('va_amount', 0)) for t in transactions)
+
+    deal_totals = dict(deal)
+    deal_totals['va_amount'] = va_total   # сводные суммы = сумма всех транзакций
+    deal_totals['tx_hash']   = ''         # хэши подставляются построчно
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     deal_number = deal.get('deal_number', '0')
@@ -156,13 +306,15 @@ def generate_docx(deal: dict, op: dict, client: dict) -> str:
     cl_short    = (client.get('short_name','CL')
                    .replace('«','').replace('»','')
                    .replace(' ','_')[:10])
-    direction   = 'sell' if act_type == 'sell' else 'buy'
     out_name    = f"act_{direction}_{deal_number}-{cl_short}_{deal_date}.docx"
     out_path    = os.path.join(OUTPUT_DIR, out_name)
 
     shutil.copy(template_path, out_path)
     doc          = Document(out_path)
-    replacements = build_replacements(deal, op, client)
+    # 1) построчно заполняем таблицу транзакций (до общей замены)
+    _expand_transactions(doc, transactions)
+    # 2) общая замена всех остальных плейсхолдеров (сводные суммы, реквизиты)
+    replacements = build_replacements(deal_totals, op, client)
     _replace_in_doc(doc, replacements)
     doc.save(out_path)
     return out_path

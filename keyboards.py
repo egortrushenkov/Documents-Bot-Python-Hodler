@@ -118,7 +118,18 @@ def act_type_kb() -> InlineKeyboardMarkup:
         text="📥 Покупаем ВА у клиента (продажа нам)",
         callback_data="act_type:buy"
     ))
+    builder.row(InlineKeyboardButton(
+        text="🧾 Счёт-заявка на покупку клиентом",
+        callback_data="act_type:invoice"
+    ))
     builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="menu:main"))
+    return builder.as_markup()
+
+
+def add_tx_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="➕ Добавить ещё транзакцию", callback_data="tx:add"))
+    builder.row(InlineKeyboardButton(text="➡️ Продолжить",              callback_data="tx:done"))
     return builder.as_markup()
 
 

@@ -16,6 +16,8 @@ class CompanyForm(StatesGroup):
     bank_account = State()
     bank_bik     = State()
     wallet       = State()
+    resident     = State()   # Резидент / Нерезидент КР
+    custom       = State()   # свои переменные (по одному вопросу на каждую)
     confirm      = State()
 
 
@@ -49,3 +51,24 @@ class ActForm(StatesGroup):
 class SettingsForm(StatesGroup):
     """Редактирование реквизитов оператора"""
     editing = State()
+
+
+class ReportForm(StatesGroup):
+    """Выгрузка отчёта ФН"""
+    kgs_rate = State()   # курс RUB → KGS для колонки «в сомах»
+
+
+class TemplateForm(StatesGroup):
+    """Загрузка шаблона DOCX через бота"""
+    waiting_file = State()
+
+
+class VarForm(StatesGroup):
+    """Создание своей переменной для шаблонов"""
+    key   = State()
+    label = State()
+
+
+class SignedForm(StatesGroup):
+    """Приём подписанных актов (файлы → file_id в БД)"""
+    waiting_files = State()

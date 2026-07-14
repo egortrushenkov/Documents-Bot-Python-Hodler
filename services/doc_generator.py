@@ -7,10 +7,8 @@ import copy
 import shutil
 from datetime import datetime
 from docx import Document
-from config import (
-    TEMPLATES_DIR, OUTPUT_DIR,
-    TEMPLATE_SELL, TEMPLATE_BUY, TEMPLATE_INVOICE_BUY,
-)
+from config import TEMPLATES_DIR, OUTPUT_DIR, ACT_TEMPLATE_FILES
+from utils import safe_name_part
 
 WP_NS = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
 
@@ -102,7 +100,8 @@ def format_number(value: str) -> str:
         return str(value)
 
 
-def build_replacements(deal: dict, op: dict, client: dict) -> dict:
+def build_replacements(deal: dict, op: dict, client: dict,
+                       client_custom: dict | None = None) -> dict:
     deal_date      = deal.get('deal_date', '')
     deal_date_full = format_date_full(deal_date)
     exec_date      = deal.get('execution_date', deal_date)
@@ -120,7 +119,7 @@ def build_replacements(deal: dict, op: dict, client: dict) -> dict:
         else 'Покупка виртуальных активов'
     )
 
-    return {
+    result = {
         # Сделка
         '{{DEAL_NUMBER}}':       deal_number,
         '{{DEAL_DATE}}':         deal_date,
@@ -172,6 +171,13 @@ def build_replacements(deal: dict, op: dict, client: dict) -> dict:
         '{{CL_BANK_ACCOUNT}}':   client.get('bank_account', ''),
         '{{CL_BANK_BIK}}':       client.get('bank_bik', ''),
     }
+    # Свои переменные: любой ключ реквизитов оператора доступен как {{OP_KEY}},
+    # значения пользовательских полей компании — как {{CL_KEY}}.
+    for k, v in (op or {}).items():
+        result.setdefault('{{OP_%s}}' % k.upper(), _s(v))
+    for k, v in (client_custom or {}).items():
+        result.setdefault('{{CL_%s}}' % k.upper(), _s(v))
+    return result
 
 
 def _to_float(value) -> float:
@@ -299,17 +305,51 @@ def _expand_transactions(doc: Document, transactions: list):
         return  # таблица транзакций одна
 
 
-def generate_docx(deal: dict, op: dict, client: dict) -> str:
+def scan_placeholders(docx_path: str) -> list:
+    """
+    Возвращает все плейсхолдеры {{...}} из шаблона (склеивая раны,
+    чтобы найти и разбитые на части).
+    """
+    import re
+    doc = Document(docx_path)
+    texts = []
+
+    def collect(paragraphs):
+        for para in paragraphs:
+            texts.append(''.join(r.text or '' for r in para.runs))
+
+    collect(doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                collect(cell.paragraphs)
+    for section in doc.sections:
+        for part in (section.header, section.footer):
+            if part is not None:
+                collect(part.paragraphs)
+
+    found = re.findall(r'\{\{[A-Za-z0-9_]+\}\}', '\n'.join(texts))
+    seen, out = set(), []
+    for p in found:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def known_placeholders(op: dict, custom_fields: list) -> set:
+    """Множество плейсхолдеров, которые бот умеет заполнять."""
+    base = set(build_replacements({}, op or {}, {}).keys())
+    base |= {'{{CL_%s}}' % f['key'].upper() for f in (custom_fields or [])}
+    return base
+
+
+def generate_docx(deal: dict, op: dict, client: dict,
+                  client_custom: dict | None = None) -> str:
     act_type = deal.get('act_type', 'sell')
-    # act_type 'sell'    = мы продаём ВА клиенту = клиент ПОКУПАЕТ у нас → template_buy
-    # act_type 'buy'     = мы покупаем ВА у клиента = клиент ПРОДАЁТ нам  → template_sell
-    # act_type 'invoice' = счёт-заявка на покупку клиентом              → template_invoice_buy
-    if act_type == 'invoice':
-        template_name, direction = TEMPLATE_INVOICE_BUY, 'invoice_buy'
-    elif act_type == 'sell':
-        template_name, direction = TEMPLATE_BUY, 'buy'
-    else:
-        template_name, direction = TEMPLATE_SELL, 'sell'
+    # Соответствие типа операции файлу шаблона — в config.ACT_TEMPLATE_FILES
+    template_name = ACT_TEMPLATE_FILES.get(act_type, ACT_TEMPLATE_FILES['sell'])
+    direction = {'sell': 'buy', 'buy': 'sell', 'invoice': 'invoice_buy'}.get(act_type, act_type)
     template_path = os.path.join(TEMPLATES_DIR, template_name)
 
     if not os.path.exists(template_path):
@@ -330,9 +370,7 @@ def generate_docx(deal: dict, op: dict, client: dict) -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     deal_number = deal.get('deal_number', '0')
     deal_date   = deal.get('deal_date', '').replace('.', '')
-    cl_short    = (client.get('short_name','CL')
-                   .replace('«','').replace('»','')
-                   .replace(' ','_')[:10])
+    cl_short    = safe_name_part(client.get('short_name', ''), limit=10, default='CL')
     out_name    = f"act_{direction}_{deal_number}-{cl_short}_{deal_date}.docx"
     out_path    = os.path.join(OUTPUT_DIR, out_name)
 
@@ -341,7 +379,7 @@ def generate_docx(deal: dict, op: dict, client: dict) -> str:
     # 1) построчно заполняем таблицу транзакций (до общей замены)
     _expand_transactions(doc, transactions)
     # 2) общая замена всех остальных плейсхолдеров (сводные суммы, реквизиты)
-    replacements = build_replacements(deal_totals, op, client)
+    replacements = build_replacements(deal_totals, op, client, client_custom)
     _replace_in_doc(doc, replacements)
     doc.save(out_path)
     return out_path

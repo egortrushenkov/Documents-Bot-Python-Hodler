@@ -2,8 +2,10 @@
 Полный FSM-флоу создания акта.
 Шаги: тип → компания → реквизиты сделки (12 полей) → подтверждение → генерация.
 """
+import asyncio
+import json
 import os
-from datetime import date
+from datetime import date, datetime
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
@@ -12,11 +14,13 @@ from keyboards import (
     act_type_kb, companies_list_kb, va_type_kb, network_kb,
     kvvo_kb, kvvo_manage_kb, BUILTIN_KVVO_CODES,
     skip_kb, confirm_act_kb, edit_act_fields_kb, back_to_main_kb,
-    add_tx_kb, split_mode_kb
+    add_tx_kb, split_mode_kb, after_generate_kb
 )
 import database as db
 from services.doc_generator import generate_docx, computed_transactions, _to_float
 from services.pdf_converter import convert_to_pdf
+from services.cleanup import try_remove
+from utils import esc
 
 router = Router()
 
@@ -170,15 +174,25 @@ async def step_company(cb: CallbackQuery, state: FSMContext):
     op = await db.get_all_settings()
     await state.update_data(operator_wallet=op.get("wallet", ""))
 
-    # Next act number
-    next_num = await db.peek_next_number()
+    # Нумерация: у каждого клиента своя (акты и счета отдельно).
+    # Если истории по клиенту ещё нет — предлагаем общий счётчик.
+    data = await state.get_data()
+    kind = "invoice" if data.get("act_type") == "invoice" else "act"
+    company_next = await db.peek_company_number(cid, kind)
+    if company_next is not None:
+        next_num = company_next
+        hint = f"Следующий номер для этого клиента: <b>{next_num}</b>"
+    else:
+        next_num = await db.peek_next_number()
+        hint = (f"По этому клиенту истории ещё нет — предлагаю общий номер: <b>{next_num}</b>\n"
+                f"<i>Введите правильный номер один раз, дальше бот запомнит нумерацию клиента.</i>")
     await state.update_data(deal_number=str(next_num))
     await state.set_state(ActForm.deal_number)
 
     await cb.message.edit_text(
         f"✅ Клиент: <b>{client['short_name']}</b>\n\n"
         f"<b>Шаг: Номер заявки</b>\n"
-        f"Предлагаемый номер: <b>{next_num}</b>\n\n"
+        f"{hint}\n\n"
         f"Введите номер или нажмите «Использовать»:",
         reply_markup=skip_kb("skip:deal_number", f"Использовать №{next_num}"),
         parse_mode="HTML"
@@ -192,8 +206,7 @@ async def step_company(cb: CallbackQuery, state: FSMContext):
 async def skip_deal_number(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     num = data.get("deal_number", "")
-    # Increment counter in DB
-    await db.next_act_number()
+    # Счётчики двигаются при генерации документов — брошенный черновик номер не сжигает
     await _ask_deal_date(cb.message.edit_text, state, num)
     await cb.answer()
 
@@ -226,11 +239,18 @@ async def skip_deal_date(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+def _valid_date(val: str) -> bool:
+    try:
+        datetime.strptime(val, "%d.%m.%Y")
+        return True
+    except ValueError:
+        return False
+
+
 @router.message(ActForm.deal_date)
 async def input_deal_date(msg: Message, state: FSMContext):
     val = msg.text.strip()
-    # Basic validation
-    if len(val) == 10 and val[2] == "." and val[5] == ".":
+    if _valid_date(val):
         await state.update_data(deal_date=val, execution_date=val)
         await _ask_va_type(msg.answer, state)
     else:
@@ -733,6 +753,9 @@ async def skip_exec_date(cb: CallbackQuery, state: FSMContext):
 @router.message(ActForm.execution_date)
 async def input_exec_date(msg: Message, state: FSMContext):
     val = msg.text.strip()
+    if not _valid_date(val):
+        await msg.answer("❌ Формат: ДД.ММ.ГГГГ — например, 12.04.2026")
+        return
     await state.update_data(execution_date=val)
     await _show_confirm(msg.answer, state)
 
@@ -800,19 +823,29 @@ async def save_edited_field(msg: Message, state: FSMContext):
 
 # ─── Generate ─────────────────────────────────────────────────────────────────
 
+def _date_iso(date_str: str) -> str:
+    try:
+        return datetime.strptime(date_str.strip(), "%d.%m.%Y").strftime("%Y-%m-%d")
+    except (ValueError, AttributeError):
+        return ""
+
+
 @router.callback_query(ActForm.confirm, F.data == "act:generate")
 async def generate_act(cb: CallbackQuery, state: FSMContext):
     await cb.answer("⏳ Генерирую документы...")
     data   = await state.get_data()
     client = await db.get_company(data["company_id"])
     op     = await db.get_all_settings()
+    custom = await db.get_company_custom(data["company_id"])
 
     try:
         status_msg = await cb.message.answer("⏳ Создаю DOCX...")
 
-        docx_path = generate_docx(data, op, client)
+        # python-docx — синхронный и тяжёлый: в поток, чтобы не блокировать бота
+        docx_path = await asyncio.to_thread(generate_docx, data, op, client, custom)
 
         await status_msg.edit_text("⏳ Конвертирую в PDF...")
+        pdf_path = None
         try:
             pdf_path = await convert_to_pdf(docx_path)
             has_pdf = True
@@ -826,19 +859,20 @@ async def generate_act(cb: CallbackQuery, state: FSMContext):
         n_tx      = len(data.get("transactions", []))
         tx_line   = f"\nТранзакций: {n_tx}" if act_type != "invoice" and n_tx > 1 else ""
         caption   = (
-            f"✅ <b>{doc_word} №{data.get('deal_number')} от {data.get('deal_date')}</b>\n"
+            f"✅ <b>{doc_word} №{esc(data.get('deal_number'))} от {esc(data.get('deal_date'))}</b>\n"
             f"Тип: {direction}\n"
-            f"Клиент: {client.get('short_name')}{tx_line}"
+            f"Клиент: {esc(client.get('short_name'))}{tx_line}"
         )
 
-        await cb.message.answer_document(
+        msg_docx = await cb.message.answer_document(
             FSInputFile(docx_path, filename=os.path.basename(docx_path)),
             caption=caption + "\n📄 DOCX",
             parse_mode="HTML"
         )
 
+        msg_pdf = None
         if has_pdf:
-            await cb.message.answer_document(
+            msg_pdf = await cb.message.answer_document(
                 FSInputFile(pdf_path, filename=os.path.basename(pdf_path)),
                 caption=caption + "\n📑 PDF",
                 parse_mode="HTML"
@@ -849,13 +883,58 @@ async def generate_act(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML"
             )
 
+        # Журнал сделок: file_id Telegram вместо локальных файлов
+        deal_id = await db.add_deal({
+            "act_type":        act_type,
+            "deal_number":     str(data.get("deal_number", "")),
+            "deal_date":       data.get("deal_date", ""),
+            "deal_date_iso":   _date_iso(data.get("deal_date", "")),
+            "execution_date":  data.get("execution_date", ""),
+            "company_id":      data.get("company_id"),
+            "client_name":     client.get("short_name", ""),
+            "client_inn":      client.get("inn", ""),
+            "client_resident": client.get("resident", "Резидент"),
+            "va_type":         data.get("va_type", ""),
+            "network":         data.get("network", ""),
+            "va_amount":       _to_float(data.get("va_amount", 0)),
+            "fiat_amount":     _to_float(data.get("fiat_amount", 0)),
+            "fiat_currency":   "RUB",
+            "exchange_rate":   data.get("exchange_rate", ""),
+            "kvvo":            data.get("kvvo", ""),
+            "client_wallet":   data.get("client_wallet", ""),
+            "operator_wallet": data.get("operator_wallet", ""),
+            "commission_fiat": data.get("commission_fiat", ""),
+            "commission_va":   data.get("commission_va", ""),
+            "transactions":    json.dumps(data.get("transactions", []), ensure_ascii=False),
+            "docx_file_id":    msg_docx.document.file_id if msg_docx.document else "",
+            "pdf_file_id":     msg_pdf.document.file_id if (msg_pdf and msg_pdf.document) else "",
+            "docx_name":       os.path.basename(docx_path),
+            "pdf_name":        os.path.basename(pdf_path) if pdf_path else "",
+        })
+
+        # Двигаем счётчики номеров (клиентский и общий)
+        kind = "invoice" if act_type == "invoice" else "act"
+        await db.record_number_used(data["company_id"], kind, data.get("deal_number"))
+
+        # Файлы уже в Telegram — локальные копии не нужны
+        try_remove(docx_path, pdf_path)
+
         await status_msg.delete()
         await state.clear()
+
+        date_warn = ""
+        if not _date_iso(data.get("deal_date", "")):
+            date_warn = "\n⚠️ Дата заявки не распознана — сделка не попадёт в месячный отчёт ФН."
+        await cb.message.answer(
+            f"💾 Сделка №{data.get('deal_number')} сохранена в журнал.{date_warn}",
+            reply_markup=after_generate_kb(deal_id),
+        )
 
     except FileNotFoundError as e:
         await cb.message.answer(
             f"❌ <b>Шаблон не найден</b>\n\n"
-            f"Проверьте, что нужный .docx лежит в папке <code>templates/</code>.\n\n"
+            f"Проверьте, что нужный .docx лежит в папке <code>templates/</code> "
+            f"(его можно загрузить через меню 📄 Шаблоны).\n\n"
             f"Детали: {e}",
             parse_mode="HTML"
         )

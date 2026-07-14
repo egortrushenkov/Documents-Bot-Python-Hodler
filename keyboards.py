@@ -15,6 +15,10 @@ def nav_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [
                 KeyboardButton(text="📋 Создать акт"),
+                KeyboardButton(text="🗂 Сделки"),
+            ],
+            [
+                KeyboardButton(text="📊 Отчёт ФН"),
                 KeyboardButton(text="🏢 Компании"),
             ],
             [
@@ -36,7 +40,12 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🏢 Компании",          callback_data="menu:companies"),
     )
     builder.row(
-        InlineKeyboardButton(text="⚙️ Реквизиты оператора", callback_data="menu:settings"),
+        InlineKeyboardButton(text="🗂 Сделки",            callback_data="deals:menu"),
+        InlineKeyboardButton(text="📊 Отчёт ФН",          callback_data="report:menu"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="📄 Шаблоны",           callback_data="tpl:menu"),
+        InlineKeyboardButton(text="⚙️ Реквизиты",         callback_data="menu:settings"),
     )
     return builder.as_markup()
 
@@ -71,7 +80,7 @@ def company_card_kb(company_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def edit_company_fields_kb(company_id: int) -> InlineKeyboardMarkup:
+def edit_company_fields_kb(company_id: int, custom_fields: List[Dict[str, str]] | None = None) -> InlineKeyboardMarkup:
     fields = [
         ("full_name",    "Полное наименование"),
         ("short_name",   "Краткое наименование"),
@@ -86,12 +95,18 @@ def edit_company_fields_kb(company_id: int) -> InlineKeyboardMarkup:
         ("bank_account", "Р/счёт"),
         ("bank_bik",     "БИК"),
         ("wallet",       "Кошелёк (крипто)"),
+        ("resident",     "Резидент/Нерезидент КР"),
     ]
     builder = InlineKeyboardBuilder()
     for fkey, flabel in fields:
         builder.row(InlineKeyboardButton(
             text=f"✏️ {flabel}",
             callback_data=f"edit_company_field:{company_id}:{fkey}"
+        ))
+    for f in (custom_fields or []):
+        builder.row(InlineKeyboardButton(
+            text=f"🧩 {f['label']}",
+            callback_data=f"edit_company_field:{company_id}:c__{f['key']}"
         ))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_company:{company_id}"))
     return builder.as_markup()
@@ -260,9 +275,153 @@ def settings_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+# ─── Deals (журнал сделок) ────────────────────────────────────────────────────
+
+def deals_menu_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🕐 Последние сделки",        callback_data="deals:recent"))
+    builder.row(InlineKeyboardButton(text="🏢 Сделки по клиенту",       callback_data="deals:by_company"))
+    builder.row(InlineKeyboardButton(text="📦 Архив подписанных (ZIP)", callback_data="arch:menu"))
+    builder.row(InlineKeyboardButton(text="🏠 Главное меню",            callback_data="menu:main"))
+    return builder.as_markup()
+
+
+def deals_list_kb(deals: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    icons = {"sell": "📤", "buy": "📥", "invoice": "🧾"}
+    for d in deals:
+        icon = icons.get(d.get("act_type"), "📄")
+        builder.row(InlineKeyboardButton(
+            text=f"{icon} №{d.get('deal_number','—')} · {d.get('deal_date','')} · {d.get('client_name','')}"[:60],
+            callback_data=f"deal:{d['id']}"
+        ))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="deals:menu"))
+    return builder.as_markup()
+
+
+def deal_card_kb(deal_id: int, has_files: bool, signed_count: int = 0) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if has_files:
+        builder.row(InlineKeyboardButton(text="📄 Прислать документы", callback_data=f"deal_docs:{deal_id}"))
+    builder.row(InlineKeyboardButton(
+        text=f"📎 Прикрепить подписанный ({signed_count})" if signed_count else "📎 Прикрепить подписанный",
+        callback_data=f"deal_attach:{deal_id}"
+    ))
+    if signed_count:
+        builder.row(InlineKeyboardButton(text="📥 Прислать подписанные", callback_data=f"deal_signed:{deal_id}"))
+    builder.row(InlineKeyboardButton(text="🗑 Удалить из журнала", callback_data=f"deal_del:{deal_id}"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="deals:menu"))
+    return builder.as_markup()
+
+
+def confirm_deal_delete_kb(deal_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"deal_del_yes:{deal_id}"),
+        InlineKeyboardButton(text="❌ Отмена",       callback_data=f"deal:{deal_id}"),
+    )
+    return builder.as_markup()
+
+
+def company_pick_kb(companies: List[Dict[str, Any]], prefix: str,
+                    back_cb: str = "deals:menu") -> InlineKeyboardMarkup:
+    """Универсальный выбор компании: callback = f'{prefix}:{id}'."""
+    builder = InlineKeyboardBuilder()
+    for c in companies:
+        builder.row(InlineKeyboardButton(
+            text=f"🏢 {c['short_name']}",
+            callback_data=f"{prefix}:{c['id']}"
+        ))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb))
+    return builder.as_markup()
+
+
+def after_generate_kb(deal_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📎 Прикрепить подписанный акт", callback_data=f"deal_attach:{deal_id}"))
+    builder.row(InlineKeyboardButton(text="📋 Новый акт",   callback_data="menu:create_act"))
+    builder.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main"))
+    return builder.as_markup()
+
+
+def signed_done_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="✅ Готово", callback_data="signed:done"))
+    return builder.as_markup()
+
+
+# ─── Reports (отчёт ФН) ───────────────────────────────────────────────────────
+
+def report_months_kb(months: List[str], labels: Dict[str, str]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for m in months:
+        builder.row(InlineKeyboardButton(text=f"📅 {labels.get(m, m)}", callback_data=f"report_month:{m}"))
+    builder.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main"))
+    return builder.as_markup()
+
+
+def report_rate_kb(saved_rate: str | None) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if saved_rate:
+        builder.row(InlineKeyboardButton(
+            text=f"⏩ Использовать {saved_rate}", callback_data="report_rate:saved"
+        ))
+    builder.row(InlineKeyboardButton(
+        text="⏭ Без пересчёта в сомы", callback_data="report_rate:skip"
+    ))
+    return builder.as_markup()
+
+
+# ─── Templates & variables ────────────────────────────────────────────────────
+
+TEMPLATE_KINDS = [
+    ("sell",    "📤 Акт: продаём ВА клиенту"),
+    ("buy",     "📥 Акт: покупаем ВА у клиента"),
+    ("invoice", "🧾 Счёт-заявка на покупку"),
+]
+
+
+def templates_menu_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for kind, label in TEMPLATE_KINDS:
+        builder.row(InlineKeyboardButton(text=label, callback_data=f"tpl:view:{kind}"))
+    builder.row(InlineKeyboardButton(text="🧩 Свои переменные", callback_data="vars:menu"))
+    builder.row(InlineKeyboardButton(text="🏠 Главное меню",    callback_data="menu:main"))
+    return builder.as_markup()
+
+
+def template_card_kb(kind: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="⬆️ Загрузить новый .docx", callback_data=f"tpl:upload:{kind}"))
+    builder.row(InlineKeyboardButton(text="📄 Скачать текущий",        callback_data=f"tpl:download:{kind}"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад",                  callback_data="tpl:menu"))
+    return builder.as_markup()
+
+
+def vars_menu_kb(fields: List[Dict[str, str]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for f in fields:
+        builder.row(InlineKeyboardButton(
+            text=f"🗑 {{{{CL_{f['key'].upper()}}}}} — {f['label']}"[:60],
+            callback_data=f"vars:del:{f['key']}"
+        ))
+    builder.row(InlineKeyboardButton(text="➕ Добавить переменную", callback_data="vars:add"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад к шаблонам",    callback_data="tpl:menu"))
+    return builder.as_markup()
+
+
 # ─── Common ───────────────────────────────────────────────────────────────────
 
 def back_to_main_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main"))
+    return builder.as_markup()
+
+
+def resident_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🇰🇬 Резидент",    callback_data="resident:Резидент"),
+        InlineKeyboardButton(text="🌍 Нерезидент",   callback_data="resident:Нерезидент"),
+    )
     return builder.as_markup()

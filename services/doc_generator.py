@@ -371,7 +371,9 @@ def generate_docx(deal: dict, op: dict, client: dict,
     deal_number = deal.get('deal_number', '0')
     deal_date   = deal.get('deal_date', '').replace('.', '')
     cl_short    = safe_name_part(client.get('short_name', ''), limit=10, default='CL')
-    out_name    = f"act_{direction}_{deal_number}-{cl_short}_{deal_date}.docx"
+    # Счёт-заявка именуется invoice_..., акты — act_<направление>_...
+    prefix      = "invoice" if act_type == "invoice" else f"act_{direction}"
+    out_name    = f"{prefix}_{deal_number}-{cl_short}_{deal_date}.docx"
     out_path    = os.path.join(OUTPUT_DIR, out_name)
 
     shutil.copy(template_path, out_path)

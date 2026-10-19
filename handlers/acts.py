@@ -879,7 +879,7 @@ async def generate_act(cb: CallbackQuery, state: FSMContext):
             )
         else:
             await cb.message.answer(
-                f"⚠️ PDF не создан (LibreOffice недоступен):\n<code>{pdf_err}</code>",
+                f"⚠️ PDF не создан:\n<code>{esc(pdf_err)}</code>",
                 parse_mode="HTML"
             )
 

@@ -10,6 +10,7 @@
 import asyncio
 import os
 import shutil
+import signal
 import tempfile
 import uuid
 from config import LIBREOFFICE_PATH, OUTPUT_DIR, PDF_CONCURRENCY
@@ -37,13 +38,19 @@ async def convert_to_pdf(docx_path: str) -> str:
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # своя группа процессов: libreoffice — обёртка, реальную работу делает
+            # дочерний soffice.bin, и proc.kill() его не задевает
+            start_new_session=True,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=CONVERT_TIMEOUT
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             await proc.wait()
             shutil.rmtree(profile_dir, ignore_errors=True)
             raise RuntimeError(f"LibreOffice не ответил за {CONVERT_TIMEOUT} с — конвертация прервана")
@@ -58,5 +65,11 @@ async def convert_to_pdf(docx_path: str) -> str:
 
     pdf_path = docx_path.replace(".docx", ".pdf")
     if not os.path.exists(pdf_path):
-        raise FileNotFoundError(f"PDF не создан: {pdf_path}")
+        # LibreOffice часто завершается с кодом 0, даже если не смог открыть файл —
+        # причина видна только в его выводе
+        raise FileNotFoundError(
+            f"PDF не создан: {pdf_path}\n"
+            f"stdout: {stdout.decode(errors='replace').strip()}\n"
+            f"stderr: {stderr.decode(errors='replace').strip()}"
+        )
     return pdf_path

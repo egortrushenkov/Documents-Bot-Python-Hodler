@@ -3,6 +3,7 @@ services:
     build: .
     container_name: hodler-doc-bot
     restart: unless-stopped
+    init: true                    # tini как PID 1: собирает «осиротевшие» процессы LibreOffice
     env_file: .env
     volumes:
       - ./data:/app/data          # БД и сгенерированные файлы

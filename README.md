@@ -82,6 +82,8 @@ go build -o hodler-bot ./cmd/hodler-bot
 | `hodler-bot migrate` | только применить миграции и выйти |
 | `hodler-bot migrate -status` | показать, какие миграции применены |
 | `hodler-bot backup data/copy.db` | консистентная копия БД (`VACUUM INTO`, безопасно в WAL) |
+| `hodler-bot export [-no-env] [файл.tar.gz]` | полная копия для переноса: БД + шаблоны + `.env` |
+| `hodler-bot import [-force] [-no-env] файл.tar.gz` | развернуть полную копию на новом сервере |
 
 ---
 
@@ -116,6 +118,74 @@ go build -o hodler-bot ./cmd/hodler-bot
 
 ---
 
+## Перенос на другой сервер
+
+`hodler-bot export` собирает **один архив** `hodler-export-ГГГГММДД-ЧЧММСС.tar.gz`:
+
+| В архиве | Что это |
+|----------|---------|
+| `data/hodler.db` | консистентный снимок БД — можно снимать на работающем боте |
+| `templates/` | шаблоны DOCX вместе с `templates/backups/` |
+| `.env` | токен и настройки; в Docker файла внутри контейнера нет — собирается из переменных окружения |
+| `manifest.json` | дата, сервер, версии миграций, sha256 каждого файла |
+
+Не переносится только `data/output/` (временные файлы): документы и подписанные акты
+живут в Telegram, в базе — их `file_id`, поэтому на новом сервере всё доступно.
+
+> ⚠️ В архиве `BOT_TOKEN`. Архив создаётся с правами `600`; передавайте его только по `scp`/`ssh`
+> и удалите после переноса. Без секретов: `export -no-env`.
+
+### Docker
+
+На старом сервере (бот может работать):
+
+```bash
+docker compose exec hodler-bot hodler-bot export data/hodler-export.tar.gz
+```
+
+Архив окажется в `./data/` на хосте. Передать на новый сервер:
+
+```bash
+scp data/hodler-export.tar.gz user@new-server:/tmp/
+```
+
+На новом сервере — код, затем распаковка архива прямо в каталог проекта
+(раскладка архива совпадает с каталогом проекта):
+
+```bash
+git clone <repo> hodler-doc-bot && cd hodler-doc-bot
+```
+
+```bash
+tar xzf /tmp/hodler-export.tar.gz && rm manifest.json
+```
+
+Остановить старый бот (`docker compose down` на старом сервере) — один токен
+не может работать на двух серверах одновременно — и запустить новый:
+
+```bash
+docker compose up -d --build
+```
+
+### Без Docker
+
+```bash
+./hodler-bot export /tmp/hodler-export.tar.gz          # старый сервер
+scp /tmp/hodler-export.tar.gz user@new-server:/tmp/
+```
+
+На новом сервере, в каталоге бота (рядом с бинарником):
+
+```bash
+./hodler-bot import /tmp/hodler-export.tar.gz
+```
+
+`import` проверяет контрольные суммы и пути, раскладывает БД, шаблоны и `.env`,
+применяет недостающие миграции. Существующие БД и `.env` без `-force` не трогает;
+с `-force` прежние файлы сохраняются как `*.before-import-ГГГГММДД-ЧЧММСС`.
+
+---
+
 ## Структура проекта
 
 ```
@@ -138,6 +208,7 @@ hodler-doc-bot/
 │   ├── docgen/                   # Генерация DOCX из шаблона + скан плейсхолдеров
 │   ├── pdf/                      # DOCX → PDF через LibreOffice (очередь + изоляция)
 │   ├── report/                   # XLSX-отчёт ФН (Приложения 4/о и 5/о)
+│   ├── transfer/                 # export / import полной копии для переноса
 │   ├── cleanup/                  # Автоочистка файлов
 │   └── util/                     # Форматирование чисел, экранирование
 ├── templates/                    # template_buy / template_sell / template_invoice_buy .docx

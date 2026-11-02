@@ -4,6 +4,8 @@
 //	hodler-bot migrate         — только применить миграции и выйти
 //	hodler-bot migrate -status — показать состояние миграций
 //	hodler-bot backup <файл>   — консистентная копия БД
+//	hodler-bot export [-no-env] [файл.tar.gz] — полная копия (БД + шаблоны + .env) для переноса
+//	hodler-bot import [-force] [-no-env] <файл.tar.gz> — развернуть копию на новом сервере
 package main
 
 import (
@@ -13,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"hodler-doc-bot/internal/cleanup"
 	"hodler-doc-bot/internal/config"
 	"hodler-doc-bot/internal/storage"
+	"hodler-doc-bot/internal/transfer"
 )
 
 func main() {
@@ -38,6 +42,11 @@ func run() error {
 	cmd := ""
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]
+	}
+
+	// import — до открытия БД: файл базы будет заменён
+	if cmd == "import" {
+		return runImport(ctx, cfg, os.Args[2:])
 	}
 
 	st, err := storage.Open(cfg.DBPath)
@@ -76,9 +85,11 @@ func run() error {
 			return fmt.Errorf("укажите путь: hodler-bot backup data/backup.db")
 		}
 		return st.BackupTo(ctx, os.Args[2])
+	case "export":
+		return runExport(ctx, cfg, st, os.Args[2:])
 	case "", "run":
 	default:
-		return fmt.Errorf("неизвестная команда %q (run | migrate [-status] | backup <файл>)", cmd)
+		return fmt.Errorf("неизвестная команда %q (run | migrate [-status] | backup <файл> | export | import)", cmd)
 	}
 
 	if cfg.BotToken == "" {
@@ -104,5 +115,72 @@ func run() error {
 	slog.Info("Бот запущен. Ожидание сообщений...")
 	app.Run(ctx)
 	slog.Info("Остановлен")
+	return nil
+}
+
+func runExport(ctx context.Context, cfg *config.Config, st *storage.Store, args []string) error {
+	fs := flag.NewFlagSet("export", flag.ExitOnError)
+	noEnv := fs.Bool("no-env", false, "не включать .env (секреты) в архив")
+	envFile := fs.String("env", ".env", "путь к .env")
+	_ = fs.Parse(args)
+	dst := fs.Arg(0)
+	if dst == "" {
+		dst = filepath.Join(filepath.Dir(cfg.DBPath),
+			fmt.Sprintf("hodler-export-%s.tar.gz", time.Now().Format("20060102-150405")))
+	}
+	res, err := transfer.Export(ctx, cfg, st, dst, transfer.ExportOptions{EnvFile: *envFile, NoEnv: *noEnv})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Готово: %s (%d КБ, файлов: %d)\n", res.Path, res.Size/1024, res.Files)
+	switch res.EnvSource {
+	case "file":
+		fmt.Println(".env: взят из файла " + *envFile)
+	case "environment":
+		fmt.Println(".env: файла нет — собран из переменных окружения (Docker env_file)")
+	default:
+		fmt.Println(".env: не включён")
+	}
+	if res.EnvSource != "none" {
+		fmt.Println("⚠️  В архиве BOT_TOKEN — передавайте его только по защищённому каналу (scp/ssh) и удалите после переноса.")
+	}
+	return nil
+}
+
+func runImport(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("import", flag.ExitOnError)
+	force := fs.Bool("force", false, "заменить существующие БД и .env (старые сохраняются как *.before-import-*)")
+	noEnv := fs.Bool("no-env", false, "не записывать .env из архива")
+	envFile := fs.String("env", ".env", "куда записать .env")
+	_ = fs.Parse(args)
+	if fs.Arg(0) == "" {
+		return fmt.Errorf("укажите архив: hodler-bot import hodler-export-....tar.gz")
+	}
+	res, err := transfer.Import(cfg, fs.Arg(0), transfer.ImportOptions{EnvFile: *envFile, Force: *force, NoEnv: *noEnv})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Копия от %s (сервер %s) развёрнута:\n", res.Manifest.CreatedAt, res.Manifest.Host)
+	fmt.Printf("  БД:      %s\n  Шаблоны: %d файл(ов) в %s\n", res.DB, res.Templates, cfg.TemplatesDir)
+	if res.Env != "" {
+		fmt.Printf("  .env:    %s\n", res.Env)
+	}
+	for _, p := range res.Saved {
+		fmt.Printf("  прежний файл сохранён: %s\n", p)
+	}
+	// Копия могла быть снята более старой версией бота — догоняем схему
+	st, err := storage.Open(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	n, err := st.Migrate(ctx, false)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		fmt.Printf("  применено миграций: %d\n", n)
+	}
+	fmt.Println("Можно запускать бота.")
 	return nil
 }

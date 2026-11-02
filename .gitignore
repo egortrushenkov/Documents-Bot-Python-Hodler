@@ -5,7 +5,10 @@
 # Данные рантайма (не коммитим: на сервере своя БД и свои файлы)
 data/
 *.db
+*.db-shm
+*.db-wal
+*.db.backup-*
 
-# Python
-__pycache__/
-*.pyc
+# Сборка Go
+/hodler-bot
+/bin/

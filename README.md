@@ -1,6 +1,6 @@
 # Hodler Doc Generator Bot
 
-Telegram-бот для автоматической генерации актов и договоров на сделки с виртуальными активами для юридических лиц.
+Telegram-бот на **Go** для автоматической генерации актов и договоров на сделки с виртуальными активами для юридических лиц.
 
 ## Что умеет
 
@@ -18,6 +18,7 @@ Telegram-бот для автоматической генерации акто�
 - **PDF**: автоматическая конвертация через LibreOffice (изолированные профили + очередь — не виснет при параллельной работе)
 - **Автоочистка**: сгенерированные файлы удаляются после отправки в Telegram; фоновая чистка подбирает остальное
 - **Многопользовательский режим**: доступ по `ADMIN_IDS`, SQLite в WAL-режиме, параллельная работа нескольких сотрудников
+- **Версионные миграции БД**: база Python-версии подхватывается как есть, с резервной копией перед миграцией
 - **Редактирование**: любое поле можно изменить перед генерацией
 
 ---
@@ -56,21 +57,62 @@ docker compose up -d --build
 ```
 
 При первом запуске автоматически создастся БД с реквизитами оператора по умолчанию.
+Если в `data/` уже лежит `hodler.db` от Python-версии — она будет мигрирована (см. ниже).
 
 ---
 
 ## Локальный запуск (без Docker)
 
 ### Требования
-- Python 3.11+
+- Go 1.26+
 - LibreOffice (`libreoffice` в PATH)
 
 ```bash
-pip install -r requirements.txt
-
-# Запустить бота (шаблоны должны уже лежать в templates/)
-python bot.py
+go build -o hodler-bot ./cmd/hodler-bot
+./hodler-bot            # шаблоны должны лежать в templates/
 ```
+
+Тесты: `go test ./...`
+
+### Команды бинарника
+
+| Команда | Что делает |
+|---------|------------|
+| `hodler-bot` | запуск бота (недостающие миграции применяются автоматически) |
+| `hodler-bot migrate` | только применить миграции и выйти |
+| `hodler-bot migrate -status` | показать, какие миграции применены |
+| `hodler-bot backup data/copy.db` | консистентная копия БД (`VACUUM INTO`, безопасно в WAL) |
+
+---
+
+## Миграция базы данных
+
+Схема БД хранится в версионных миграциях `internal/storage/migrations/` и
+таблице `schema_migrations`. Каждая миграция применяется один раз, в транзакции.
+
+| № | Миграция | Что делает |
+|---|----------|------------|
+| 0001 | `baseline_schema` | схема Python-версии (`CREATE TABLE IF NOT EXISTS` — существующие таблицы не трогаются) |
+| 0002 | `companies_resident` | колонка `companies.resident`, если её нет (старые базы) |
+| 0003 | `seed_operator_defaults` | реквизиты оператора по умолчанию и счётчик номеров (`INSERT OR IGNORE`: ваши значения не перезаписываются) |
+| 0004 | `data_cleanup_and_indexes` | индекс `signed_docs(deal_id)`, нормализация NULL/пустых значений, восстановление `deal_date_iso` из `ДД.ММ.ГГГГ` — такие сделки снова попадают в отчёт ФН |
+
+### Переход с Python-версии
+
+1. Остановить старый бот: `docker compose down` (или `systemctl stop hodler-bot`).
+2. Оставить `data/hodler.db` и `templates/` на месте — формат таблиц не меняется.
+3. Обновить код и запустить: `docker compose up -d --build`.
+
+При первом старте бот обнаружит базу без `schema_migrations`, сделает копию
+`data/hodler.db.backup-ГГГГММДД-ЧЧММСС` и применит миграции. Все компании, сделки,
+`file_id` документов, подписанные акты, счётчики номеров, свои переменные и КВВО
+сохраняются. Проверить: `docker compose run --rm hodler-bot hodler-bot migrate -status`.
+
+Откат: остановить бот и вернуть файл из резервной копии на место `data/hodler.db`
+(Python-версия работает с мигрированной базой, лишние таблица и индекс ей не мешают).
+
+Новая миграция = новый файл `NNNN_name.sql` + запись в `Migrations` (`internal/storage/migrate.go`);
+уже выпущенные миграции не меняются.
 
 ---
 
@@ -78,39 +120,30 @@ python bot.py
 
 ```
 hodler-doc-bot/
-├── bot.py                  # Точка входа
-├── config.py               # Конфиг из .env
-├── database.py             # SQLite: компании, настройки, счётчик
-├── states.py               # FSM-состояния
-├── keyboards.py            # Все клавиатуры
-│
-├── handlers/
-│   ├── menu.py             # Главное меню
-│   ├── companies.py        # CRUD компаний (+ резидентство, свои переменные)
-│   ├── acts.py             # Создание акта (15 шагов FSM) + запись в журнал
-│   ├── deals.py            # Журнал сделок, подписанные акты, ZIP-архивы
-│   ├── reports.py          # Отчёт ФН (XLSX за месяц)
-│   ├── templates.py        # Загрузка шаблонов и свои переменные
-│   └── settings.py         # Реквизиты оператора
-│
-├── services/
-│   ├── doc_generator.py    # Генерация DOCX из шаблона + скан плейсхолдеров
-│   ├── pdf_converter.py    # Конвертация DOCX → PDF (очередь + изоляция)
-│   ├── report_xlsx.py      # XLSX-отчёт ФН (Приложения 4/о и 5/о)
-│   └── cleanup.py          # Автоочистка файлов
-│
-├── templates/
-│   ├── template_buy.docx           # Клиент покупает ВА у нас
-│   ├── template_sell.docx          # Клиент продаёт ВА нам
-│   └── template_invoice_buy.docx   # Счёт-заявка на покупку клиентом
-│
-├── data/
-│   ├── hodler.db           # SQLite-база
-│   └── output/             # Сгенерированные файлы
-│
+├── cmd/hodler-bot/main.go        # Точка входа, команды run / migrate / backup
+├── internal/
+│   ├── config/                   # Конфиг из .env, соответствие тип → шаблон
+│   ├── storage/                  # SQLite: компании, настройки, журнал, счётчики
+│   │   ├── migrate.go            # Движок версионных миграций + резервная копия
+│   │   └── migrations/*.sql      # Миграции схемы и данных
+│   ├── bot/                      # Telegram: FSM-диалоги и меню
+│   │   ├── app.go                # Сессии, доступ по ADMIN_IDS, маршрутизация
+│   │   ├── keyboards.go          # Все клавиатуры
+│   │   ├── menu.go               # Главное меню, реквизиты оператора
+│   │   ├── companies.go          # CRUD компаний (+ резидентство, свои переменные)
+│   │   ├── acts.go               # Создание акта (FSM) + запись в журнал
+│   │   ├── deals.go              # Журнал сделок, подписанные акты, ZIP-архивы
+│   │   ├── reports.go            # Отчёт ФН (XLSX за месяц)
+│   │   └── templates.go          # Загрузка шаблонов и свои переменные
+│   ├── docgen/                   # Генерация DOCX из шаблона + скан плейсхолдеров
+│   ├── pdf/                      # DOCX → PDF через LibreOffice (очередь + изоляция)
+│   ├── report/                   # XLSX-отчёт ФН (Приложения 4/о и 5/о)
+│   ├── cleanup/                  # Автоочистка файлов
+│   └── util/                     # Форматирование чисел, экранирование
+├── templates/                    # template_buy / template_sell / template_invoice_buy .docx
+├── data/                         # hodler.db + output/ (не в git)
 ├── Dockerfile
 ├── docker-compose.yml
-├── requirements.txt
 └── .env.example
 ```
 
@@ -207,11 +240,13 @@ hodler-doc-bot/
 ## Деплой на Timeweb VPS (без Docker)
 
 ```bash
-# На сервере
-cd /opt/hodler-doc-bot
-pip install -r requirements.txt
+# Локально или на сервере (нужен Go 1.26+)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o hodler-bot ./cmd/hodler-bot
 
-# Создать systemd-сервис
+# На сервере
+sudo apt install -y libreoffice-writer fonts-liberation
+mkdir -p /opt/hodler-doc-bot && cp hodler-bot /opt/hodler-doc-bot/
+# templates/ и .env положить рядом; data/hodler.db от Python-версии оставить на месте
 sudo nano /etc/systemd/system/hodler-bot.service
 ```
 
@@ -222,7 +257,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/hodler-doc-bot
-ExecStart=/usr/bin/python3 bot.py
+ExecStart=/opt/hodler-doc-bot/hodler-bot
 Restart=always
 RestartSec=5
 EnvironmentFile=/opt/hodler-doc-bot/.env
@@ -232,7 +267,8 @@ WantedBy=multi-user.target
 ```
 
 ```bash
+sudo systemctl daemon-reload
 sudo systemctl enable hodler-bot
-sudo systemctl start hodler-bot
+sudo systemctl restart hodler-bot
 sudo journalctl -u hodler-bot -f
 ```

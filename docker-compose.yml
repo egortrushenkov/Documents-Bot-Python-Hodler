@@ -6,10 +6,8 @@ services:
     init: true                    # tini как PID 1: собирает «осиротевшие» процессы LibreOffice
     env_file: .env
     volumes:
-      - ./data:/app/data          # БД и сгенерированные файлы
+      - ./data:/app/data          # БД (та же hodler.db, что у Python-версии) и сгенерированные файлы
       - ./templates:/app/templates # Шаблоны DOCX
-    environment:
-      - PYTHONUNBUFFERED=1
     logging:
       driver: "json-file"
       options:

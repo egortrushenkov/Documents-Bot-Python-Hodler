@@ -12,3 +12,8 @@ data/
 # Сборка Go
 /hodler-bot
 /bin/
+
+# Старое окружение Python-версии
+venv/
+.venv/
+.env.backup

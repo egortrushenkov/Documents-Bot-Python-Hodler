@@ -1,5 +1,12 @@
+# Откуда брать базовые образы. По умолчанию — зеркало Docker Hub от Google:
+# у Docker Hub жёсткий лимит анонимных скачиваний (ошибка 429 Too Many Requests).
+# Переопределить: DOCKER_REGISTRY=docker.io/library в .env
+ARG REGISTRY=mirror.gcr.io/library
+
 # ─── Сборка ───────────────────────────────────────────────────────────────────
-FROM golang:1.26 AS build
+FROM ${REGISTRY}/golang:1.26 AS build
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -9,7 +16,7 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/hodler-bot ./cmd/hodler-bot
 
 # ─── Рантайм ──────────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM ${REGISTRY}/debian:bookworm-slim
 
 # LibreOffice для PDF-конвертации, сертификаты для HTTPS к Telegram
 RUN apt-get update && apt-get install -y --no-install-recommends \

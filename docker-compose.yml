@@ -1,6 +1,11 @@
 services:
   hodler-bot:
-    build: .
+    build:
+      context: .
+      args:
+        # Базовые образы: зеркало Google (нет лимита Docker Hub). Своё — DOCKER_REGISTRY в .env
+        REGISTRY: ${DOCKER_REGISTRY:-mirror.gcr.io/library}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     container_name: hodler-doc-bot
     restart: unless-stopped
     init: true                    # tini как PID 1: собирает «осиротевшие» процессы LibreOffice

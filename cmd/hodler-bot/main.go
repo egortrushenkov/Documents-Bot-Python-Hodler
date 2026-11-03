@@ -103,6 +103,11 @@ func run() error {
 		return err
 	}
 
+	if len(cfg.AdminIDs) == 0 {
+		slog.Warn("⚠️ ADMIN_IDS не задан — бот отвечает ЛЮБОМУ пользователю Telegram! Укажите ID сотрудников в .env")
+	} else {
+		slog.Info("Доступ ограничен", "users", len(cfg.AdminIDs))
+	}
 	app, err := bot.New(cfg, st)
 	if err != nil {
 		return err

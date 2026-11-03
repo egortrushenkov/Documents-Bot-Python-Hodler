@@ -53,7 +53,11 @@ func Load() *Config {
 		PDFConcurrency:      envInt("PDF_CONCURRENCY", 1),
 		BackupBeforeMigrate: env("DB_BACKUP_BEFORE_MIGRATE", "1") != "0",
 	}
-	for _, part := range strings.Split(os.Getenv("ADMIN_IDS"), ",") {
+	ids := os.Getenv("ADMIN_IDS")
+	if strings.TrimSpace(ids) == "" {
+		ids = os.Getenv("ALLOWED_USER_IDS") // старое имя переменной в некоторых .env
+	}
+	for _, part := range strings.Split(ids, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue

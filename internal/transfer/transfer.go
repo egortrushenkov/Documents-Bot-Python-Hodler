@@ -44,8 +44,8 @@ const (
 // EnvKeys — переменные, из которых собирается .env, если файла нет
 // (например, в Docker настройки приходят через env_file).
 var EnvKeys = []string{
-	"BOT_TOKEN", "ADMIN_IDS", "DB_PATH", "TEMPLATES_DIR", "OUTPUT_DIR", "LIBREOFFICE_PATH",
-	"CLEANUP_MAX_AGE_HOURS", "CLEANUP_INTERVAL_MIN", "PDF_CONCURRENCY", "DB_BACKUP_BEFORE_MIGRATE",
+	"BOT_TOKEN", "ADMIN_IDS", "ALLOWED_USER_IDS", "DB_PATH", "TEMPLATES_DIR", "OUTPUT_DIR", "LIBREOFFICE_PATH",
+	"CLEANUP_MAX_AGE_HOURS", "CLEANUP_INTERVAL_MIN", "PDF_CONCURRENCY", "DB_BACKUP_BEFORE_MIGRATE", "DOCKER_REGISTRY", "GOPROXY",
 }
 
 type Manifest struct {

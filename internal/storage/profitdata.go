@@ -55,9 +55,32 @@ func (s *Store) AddReferrer(ctx context.Context, name string, percent float64) (
 	return res.LastInsertId()
 }
 
+// UpdateReferrer меняет имя/процент. При переименовании имя обновляется и в
+// сделках и выплатах — иначе расчёт реферала «потеряет» историю.
 func (s *Store) UpdateReferrer(ctx context.Context, id int64, name string, percent float64) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE referrers SET name=?, percent=? WHERE id=?", name, percent, id)
-	return err
+	old, err := s.Referrer(ctx, id)
+	if err != nil || old == nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "UPDATE referrers SET name=?, percent=? WHERE id=?", name, percent, id); err != nil {
+		return err
+	}
+	if old.Name != name {
+		for _, q := range []string{
+			"UPDATE deals SET referrer_name=? WHERE referrer_name=?",
+			"UPDATE treasury_ops SET referrer_name=? WHERE referrer_name=?",
+		} {
+			if _, err := tx.ExecContext(ctx, q, name, old.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 // DeleteReferrer удаляет реферала и открепляет его от клиентов

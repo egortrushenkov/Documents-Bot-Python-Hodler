@@ -14,17 +14,20 @@ type TreasuryOp struct {
 	ReferrerName string
 	Note         string
 	CreatedBy    string
+	PeriodFrom   string // YYYY-MM-DD — за какой период выплата (может быть пусто)
+	PeriodTo     string
 }
 
-const treasuryCols = "id, op_date, kind, usdt, rub, referrer_name, note, created_by"
+const treasuryCols = "id, op_date, kind, usdt, rub, referrer_name, note, created_by, period_from, period_to"
 
 func scanOp(sc interface{ Scan(...any) error }) (*TreasuryOp, error) {
 	var o TreasuryOp
-	var date, kind, ref, note, by Str
+	var date, kind, ref, note, by, pf, pt Str
 	var usdt, rub Float
-	if err := sc.Scan(&o.ID, &date, &kind, &usdt, &rub, &ref, &note, &by); err != nil {
+	if err := sc.Scan(&o.ID, &date, &kind, &usdt, &rub, &ref, &note, &by, &pf, &pt); err != nil {
 		return nil, err
 	}
+	o.PeriodFrom, o.PeriodTo = string(pf), string(pt)
 	o.OpDate, o.Kind, o.ReferrerName, o.Note, o.CreatedBy = string(date), string(kind), string(ref), string(note), string(by)
 	o.USDT, o.Rub = float64(usdt), float64(rub)
 	return &o, nil
@@ -32,8 +35,8 @@ func scanOp(sc interface{ Scan(...any) error }) (*TreasuryOp, error) {
 
 func (s *Store) AddTreasuryOp(ctx context.Context, o *TreasuryOp) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `INSERT INTO treasury_ops
-		(op_date, kind, usdt, rub, referrer_name, note, created_by) VALUES (?,?,?,?,?,?,?)`,
-		o.OpDate, o.Kind, o.USDT, o.Rub, o.ReferrerName, o.Note, o.CreatedBy)
+		(op_date, kind, usdt, rub, referrer_name, note, created_by, period_from, period_to) VALUES (?,?,?,?,?,?,?,?,?)`,
+		o.OpDate, o.Kind, o.USDT, o.Rub, o.ReferrerName, o.Note, o.CreatedBy, o.PeriodFrom, o.PeriodTo)
 	if err != nil {
 		return 0, err
 	}
@@ -118,4 +121,22 @@ func (s *Store) BuybacksSince(ctx context.Context, fromISO string) ([]*Buyback, 
 // BuybacksBetween — активные откупки за период.
 func (s *Store) BuybacksBetween(ctx context.Context, fromISO, toISO string) ([]*Buyback, error) {
 	return s.queryBuybacks(ctx, "WHERE status='active' AND buy_date_iso BETWEEN ? AND ? ORDER BY buy_date_iso, id", fromISO, toISO)
+}
+
+// UpdateTreasuryOp — правка операции (дата, суммы, комментарий, период).
+func (s *Store) UpdateTreasuryOp(ctx context.Context, o *TreasuryOp) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE treasury_ops SET op_date=?, usdt=?, rub=?, note=?,
+		period_from=?, period_to=? WHERE id=?`, o.OpDate, o.USDT, o.Rub, o.Note, o.PeriodFrom, o.PeriodTo, o.ID)
+	return err
+}
+
+// ReferrerOps — выплаты и ручные начисления реферала за всё время.
+func (s *Store) ReferrerOps(ctx context.Context, name string) ([]*TreasuryOp, error) {
+	return s.queryOps(ctx, "WHERE referrer_name=? AND kind IN ('referral','referral_adj') ORDER BY op_date, id", name)
+}
+
+// ReferrerDeals — активные продажи клиентов реферала (по имени из снимка сделки).
+func (s *Store) ReferrerDeals(ctx context.Context, name string) ([]*Deal, error) {
+	return s.queryDeals(ctx, `WHERE d.referrer_name=? AND d.act_type='sell' AND d.status='active'
+		AND d.deal_date_iso!='' ORDER BY d.deal_date_iso, d.id`, name)
 }

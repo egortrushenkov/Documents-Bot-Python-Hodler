@@ -296,7 +296,7 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 		c.Send("✅ Чат подключён к уведомлениям о сделках.\n\n"+
 			"Сюда будут приходить новые сделки, откупки, правки и отмены.\n"+
 			"Отчёт за день: /today, за дату: /report 03.11.2026\n"+
-			"Остатки USDT и ₽: /balance\nПоставщики и клиенты за месяц: /stats (или /stats сегодня, /stats прошлый)\n"+
+			"Остатки USDT и ₽: /balance\nДолги рефералам: /ref\nПоставщики и клиенты за месяц: /stats (или /stats сегодня, /stats прошлый)\n"+
 			"Отключить: /unbind", nil)
 	case "/unbind":
 		if !isAdmin {
@@ -304,6 +304,21 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 		}
 		_ = a.st.RemoveNotifyChat(c, c.chatID)
 		c.Send("🔕 Уведомления в этот чат отключены.", nil)
+	case "/ref":
+		if !bound && !isAdmin {
+			return
+		}
+		refs, _ := a.st.Referrers(c)
+		lines := []string{"👥 <b>Рефералы — к выплате на " + time.Now().Format("02.01.2006") + "</b>"}
+		total := 0.0
+		for _, r := range refs {
+			st, _ := a.refStatement(c, &r, "", "")
+			lines = append(lines, fmt.Sprintf("• %s: начислено %s · выплачено %s · <b>%s USDT</b>", escape(r.Name),
+				util.RU(st.TotalAccrued, 2), util.RU(st.TotalPaid, 2), util.RU(st.TotalOwed(), 2)))
+			total += st.TotalOwed()
+		}
+		lines = append(lines, fmt.Sprintf("Итого: <b>%s USDT</b>", util.RU(total, 2)))
+		c.Send(strings.Join(lines, "\n"), nil)
 	case "/balance", "/stats":
 		if !bound && !isAdmin {
 			return

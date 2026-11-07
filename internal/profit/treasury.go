@@ -118,6 +118,10 @@ func ComputeTreasury(opening *storage.TreasuryOp, deals []*storage.Deal, buyback
 		t.OpenEstimatedBuyUSD = t.OpenRub / (1 + feeOf(deals)/100) / t.LastBuyRate
 	}
 	for _, o := range ops {
+		if o.Kind == "referral_adj" { // ручное начисление рефералу: долг, не движение денег
+			t.RefAccrued[o.ReferrerName] += o.USDT
+			continue
+		}
 		t.ManualCount++
 		t.ManualUSDT += o.USDT
 		t.ManualRub += o.Rub

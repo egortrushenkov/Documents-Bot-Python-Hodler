@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -237,5 +238,83 @@ func TestTreasuryFlow(t *testing.T) {
 	tr, _ := h.app.treasury(&Ctx{Context: ctx, app: h.app})
 	if r := tr.Rub; r != 50000 || tr.USDT != 990 {
 		t.Fatalf("после отмены: %v ₽, %v USDT", r, tr.USDT)
+	}
+}
+
+func TestReferralPayouts(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.group("/bind", 1)
+	h.click("ref:add")
+	h.text("Дима Реферал")
+	h.text("20")
+	h.addCompany("Иксхаб")
+	h.click("edit_company_field:1:referrer")
+	h.click("coref:1:1")
+	h.sellDeal("1", "800", "22629,97", "1850000")
+	h.click("bb:new")
+	h.click("bb:t:1")
+	h.click("bb:next")
+	h.text("БРАЙТУМ")
+	h.text("81,60")
+	h.text("1850000")
+	h.click("bb:save")
+
+	// Долг до бота — ручное начисление
+	h.click("ref:adj:1")
+	h.text("100")
+	h.click("ref:paytoday")
+	h.expect(h.click("ref:paynonote"), "Накоплено к выплате: 105,75 USDT")
+
+	// Расчёт за сегодня → кнопка «Выплатить» с точной суммой
+	day := time.Now().Format("20060102")
+	st := h.click("ref:st:1:" + day + ":" + day)
+	h.expect(st, "Иксхаб — 1 850 000 ₽, ЧКД 30,28 → <b>5,75</b>")
+	h.expect(st, "К выплате на")
+	h.expect(st, "ref:payq:1:10575:")
+
+	// Выплата 50 за период, с датой и комментарием
+	h.click("ref:payq:1:5000:" + day + ":" + day)
+	h.click("ref:paytoday")
+	h.expect(h.text("наличными"), "Накоплено к выплате: 55,75 USDT")
+	if !h.tg.find("sendMessage", "Выплата рефералу Дима Реферал: 50,00 USDT") {
+		t.Fatal("нет уведомления о выплате")
+	}
+
+	// Правка суммы выплаты → долг пересчитан, руководителям ответ «изменена»
+	ops, _ := h.app.st.ReferrerOps(ctx, "Дима Реферал")
+	var payID int64
+	for _, o := range ops {
+		if o.Kind == "referral" {
+			payID = o.ID
+		}
+	}
+	h.click(fmt.Sprintf("ref:oe:%d:amount", payID))
+	h.text("60")
+	if !h.tg.find("sendMessage", "Выплата изменена") {
+		t.Fatal("нет уведомления об изменении выплаты")
+	}
+	h.expect(h.click("ref:view:1"), "Накоплено к выплате: 45,75 USDT")
+
+	// Остатки USDT учитывают выплату, но не ручное начисление
+	tr, _ := h.app.treasury(&Ctx{Context: ctx, app: h.app})
+	if r := tr.ManualUSDT; r != -60 {
+		t.Fatalf("ручные операции в остатках: %v", r)
+	}
+
+	// Переименование реферала сохраняет историю
+	h.click("ref:ename:1")
+	h.text("Дмитрий")
+	h.expect(h.click("ref:view:1"), "Накоплено к выплате: 45,75 USDT")
+
+	// Удаление выплаты
+	h.click(fmt.Sprintf("ref:odyes:%d", payID))
+	h.expect(h.click("ref:view:1"), "Накоплено к выплате: 105,75 USDT")
+
+	// /ref в группе
+	h.group("/ref", 555)
+	g := h.tg.callsTo("-100")
+	if l := g[len(g)-1].Text; !strings.Contains(l, "Дмитрий") || !strings.Contains(l, "105,75 USDT") {
+		t.Fatalf("/ref: %q", l)
 	}
 }

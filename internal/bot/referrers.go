@@ -22,13 +22,21 @@ func (a *App) showReferrers(c *Ctx, prefix string) {
 	}
 	lines := []string{prefix + "👥 <b>Рефералы</b>\n",
 		"Реферал закрепляется за клиентом (🏢 Компании → ✏️ Редактировать → 👥 Реферал).",
-		"Вознаграждение = процент × (ЧКД − налог). В проведённых сделках имя и процент сохраняются на момент сделки.\n"}
+		"Вознаграждение = процент × (ЧКД − налог). В проведённых сделках имя и процент сохраняются на момент сделки.",
+		"В карточке реферала: расчёт за любой период, выплаты, накопленный долг.\n"}
 	var rows []kbRow
 	if len(refs) == 0 {
 		lines = append(lines, "<i>Пока никого нет.</i>")
 	}
+	total := 0.0
 	for _, r := range refs {
-		rows = append(rows, row(btn(fmt.Sprintf("👤 %s — %s%%", r.Name, util.Fmt2(r.Percent)), fmt.Sprintf("ref:view:%d", r.ID))))
+		st, _ := a.refStatement(c, &r, "", "")
+		total += st.TotalOwed()
+		rows = append(rows, row(btn(util.TruncRunes(fmt.Sprintf("👤 %s — %s%% · к выплате %s", r.Name, util.Fmt2(r.Percent),
+			util.RU(st.TotalOwed(), 2)), 60), fmt.Sprintf("ref:view:%d", r.ID))))
+	}
+	if len(refs) > 0 {
+		lines = append(lines, fmt.Sprintf("<b>Всего к выплате рефералам: %s USDT</b>", util.RU(total, 2)))
 	}
 	rows = append(rows, row(btn("➕ Добавить реферала", "ref:add")), row(btn("🏠 Главное меню", "menu:main")))
 	c.Reply(strings.Join(lines, "\n"), ikb(rows...))
@@ -55,6 +63,9 @@ func (a *App) referrerCallback(c *Ctx, head, rest string) {
 		}
 		return
 	}
+	if a.refCallback2(c, parts) {
+		return
+	}
 	switch parts[0] {
 	case "menu":
 		c.s.Clear()
@@ -63,16 +74,6 @@ func (a *App) referrerCallback(c *Ctx, head, rest string) {
 		c.s.Clear()
 		c.s.State = stRefName
 		c.Edit("➕ <b>Новый реферал</b>\n\nВведите имя, как оно будет в отчёте (например: <i>Дима Реферал</i>):", nil)
-	case "view":
-		r, err := a.st.Referrer(c, id(1))
-		if err != nil || r == nil {
-			c.Answer("Не найден", true)
-			return
-		}
-		c.Edit(fmt.Sprintf("👤 <b>%s</b>\nПроцент: %s%% от (ЧКД − налог)", escape(r.Name), util.Fmt2(r.Percent)), ikb(
-			row(btn("✏️ Имя", fmt.Sprintf("ref:ename:%d", r.ID)), btn("✏️ Процент", fmt.Sprintf("ref:epct:%d", r.ID))),
-			row(btn("🗑 Удалить", fmt.Sprintf("ref:del:%d", r.ID))),
-			row(btn("◀️ Назад", "ref:menu"))))
 	case "ename", "epct":
 		c.s.Clear()
 		c.s.Data["ref_id"] = parts[1]
@@ -94,15 +95,21 @@ func (a *App) referrerCallback(c *Ctx, head, rest string) {
 }
 
 func (a *App) referrerMessage(c *Ctx, text string) {
+	if a.refMessage2(c, text) {
+		return
+	}
 	switch c.s.State {
 	case stRefName:
 		if rid, ok := parseID(c.s.Data["ref_id"]); ok { // переименование
 			r, _ := a.st.Referrer(c, rid)
 			if r != nil {
-				_ = a.st.UpdateReferrer(c, rid, text, r.Percent)
+				if err := a.st.UpdateReferrer(c, rid, text, r.Percent); err != nil {
+					c.fail(err)
+					return
+				}
 			}
 			c.s.Clear()
-			a.showReferrers(c, "✅ Сохранено\n\n")
+			a.showReferrerCard(c, rid, "✅ Сохранено\n\n")
 			return
 		}
 		c.s.Data["ref_name"] = text
@@ -123,9 +130,14 @@ func (a *App) referrerMessage(c *Ctx, text string) {
 		} else {
 			_, err = a.st.AddReferrer(c, c.s.Data["ref_name"], pct)
 		}
+		rid, editing := parseID(c.s.Data["ref_id"])
 		c.s.Clear()
 		if err != nil {
 			c.fail(err)
+			return
+		}
+		if editing {
+			a.showReferrerCard(c, rid, "✅ Сохранено\n\n")
 			return
 		}
 		a.showReferrers(c, "✅ Сохранено\n\n")

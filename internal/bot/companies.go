@@ -83,7 +83,7 @@ func (a *App) sendCompanyCard(c *Ctx, co *storage.Company, prefix string) {
 			return
 		}
 	}
-	c.Reply(prefix+companyCardText(co, custom, defs), companyCardKB(co.ID))
+	c.Reply(prefix+companyCardText(co, custom, defs)+"\n"+a.companyReferralLine(c, co), companyCardKB(co.ID))
 }
 
 func (a *App) showCompanies(c *Ctx) {
@@ -164,6 +164,17 @@ func (a *App) companyCallback(c *Ctx, head, rest string) {
 		c.s.Data["editing_id"] = idStr
 		c.s.Data["single_field"] = key
 
+		if key == "referrer" {
+			c.s.Clear()
+			a.askCompanyReferrer(c, co)
+			return
+		}
+		if key == "referral_percent" {
+			c.s.State = stRefCoPct
+			c.Edit("👥 <b>Процент реферала для этого клиента</b>\n\nВведите число (например: 15) или <code>-</code>, "+
+				"чтобы брать процент самого реферала:", nil)
+			return
+		}
 		if key == "resident" { // резидентство меняется кнопками
 			c.s.State = stCompanyResident
 			cur := co.Resident

@@ -12,6 +12,8 @@ import (
 
 type kbRow = []models.InlineKeyboardButton
 
+type btnT = models.InlineKeyboardButton
+
 func btn(text, data string) models.InlineKeyboardButton {
 	return models.InlineKeyboardButton{Text: text, CallbackData: data}
 }
@@ -41,6 +43,8 @@ const (
 	navCompanies = "🏢 Компании"
 	navSettings  = "⚙️ Реквизиты"
 	navMenu      = "🏠 Меню"
+	navBuybacks  = "🔁 Откупки"
+	navProfit    = "📈 Прибыль"
 )
 
 func navKB() *models.ReplyKeyboardMarkup {
@@ -48,6 +52,7 @@ func navKB() *models.ReplyKeyboardMarkup {
 	return &models.ReplyKeyboardMarkup{
 		Keyboard: [][]models.KeyboardButton{
 			{k(navCreateAct), k(navDeals)},
+			{k(navBuybacks), k(navProfit)},
 			{k(navReport), k(navCompanies)},
 			{k(navSettings), k(navMenu)},
 		},
@@ -61,7 +66,9 @@ func navKB() *models.ReplyKeyboardMarkup {
 func mainMenuKB() *models.InlineKeyboardMarkup {
 	return ikb(
 		row(btn("📋 Создать акт", "menu:create_act"), btn("🏢 Компании", "menu:companies")),
-		row(btn("🗂 Сделки", "deals:menu"), btn("📊 Отчёт ФН", "report:menu")),
+		row(btn("🗂 Сделки", "deals:menu"), btn("🔁 Откупки", "bb:menu")),
+		row(btn("📈 Прибыль", "profit:menu"), btn("📊 Отчёт ФН", "report:menu")),
+		row(btn("👥 Рефералы", "ref:menu"), btn("🔔 Уведомления", "notify:menu")),
 		row(btn("📄 Шаблоны", "tpl:menu"), btn("⚙️ Реквизиты", "menu:settings")),
 	)
 }
@@ -109,6 +116,8 @@ var companyEditFields = [][2]string{
 	{"bank_bik", "БИК"},
 	{"wallet", "Кошелёк (крипто)"},
 	{"resident", "Резидент/Нерезидент КР"},
+	{"referrer", "👥 Реферал"},
+	{"referral_percent", "👥 % реферала для клиента"},
 }
 
 func editCompanyFieldsKB(id int64, custom []storage.CustomField) *models.InlineKeyboardMarkup {
@@ -285,6 +294,9 @@ var settingsFields = [][2]string{
 	{"wallet", "Кошелёк оператора"},
 	{"director_name", "ФИО директора"},
 	{"director_title", "Должность директора"},
+	{"tax_percent", "📈 Налог, % от ЧКД"},
+	{"bank_fee_percent", "📈 Комиссия банка, %"},
+	{"report_title", "📈 Название отчёта"},
 }
 
 func settingsKB() *models.InlineKeyboardMarkup {
@@ -316,6 +328,9 @@ func dealsListKB(deals []*storage.Deal) *models.InlineKeyboardMarkup {
 		if icon == "" {
 			icon = "📄"
 		}
+		if d.Cancelled() {
+			icon = "❌"
+		}
 		text := fmt.Sprintf("%s №%s · %s · %s", icon, d.DealNumber, d.DealDate, d.ClientName)
 		rows = append(rows, row(btn(util.TruncRunes(text, 60), fmt.Sprintf("deal:%d", d.ID))))
 	}
@@ -323,20 +338,37 @@ func dealsListKB(deals []*storage.Deal) *models.InlineKeyboardMarkup {
 	return ikb(rows...)
 }
 
-func dealCardKB(id int64, hasFiles bool, signed int) *models.InlineKeyboardMarkup {
+// dealCardKB2 — карточка сделки с откупкой, переделкой и отменой.
+func dealCardKB2(d *storage.Deal, hasFiles bool, signed int) *models.InlineKeyboardMarkup {
+	id := d.ID
 	var rows []kbRow
 	if hasFiles {
 		rows = append(rows, row(btn("📄 Прислать документы", fmt.Sprintf("deal_docs:%d", id))))
 	}
-	label := "📎 Прикрепить подписанный"
-	if signed > 0 {
-		label = fmt.Sprintf("📎 Прикрепить подписанный (%d)", signed)
+	if !d.Cancelled() {
+		if d.ActType == "sell" {
+			if d.BuybackID.Valid && d.BuyRate > 0 {
+				rows = append(rows, row(btn(fmt.Sprintf("🔁 Откупка №%d", d.BuybackID.Int64), fmt.Sprintf("bb:view:%d", d.BuybackID.Int64))))
+			} else {
+				rows = append(rows, row(btn("🔁 Закрыть откупкой", fmt.Sprintf("dealx:bb:%d", id))))
+			}
+		}
+		rows = append(rows, row(btn("✏️ Переделать заявку", fmt.Sprintf("dealx:edit:%d", id))))
+		label := "📎 Прикрепить подписанный"
+		if signed > 0 {
+			label = fmt.Sprintf("📎 Прикрепить подписанный (%d)", signed)
+		}
+		rows = append(rows, row(btn(label, fmt.Sprintf("deal_attach:%d", id))))
 	}
-	rows = append(rows, row(btn(label, fmt.Sprintf("deal_attach:%d", id))))
 	if signed > 0 {
 		rows = append(rows, row(btn("📥 Прислать подписанные", fmt.Sprintf("deal_signed:%d", id))))
 	}
-	rows = append(rows, row(btn("🗑 Удалить из журнала", fmt.Sprintf("deal_del:%d", id))))
+	if d.Cancelled() {
+		rows = append(rows, row(btn("↩️ Восстановить", fmt.Sprintf("dealx:restore:%d", id))),
+			row(btn("🗑 Удалить из журнала", fmt.Sprintf("deal_del:%d", id))))
+	} else {
+		rows = append(rows, row(btn("❌ Отменить сделку", fmt.Sprintf("dealx:cancel:%d", id))))
+	}
 	rows = append(rows, row(btn("◀️ Назад", "deals:menu")))
 	return ikb(rows...)
 }

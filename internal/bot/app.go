@@ -107,6 +107,8 @@ type Ctx struct {
 	cb       *models.CallbackQuery // нажатая кнопка
 	cbMsgID  int
 	answered bool
+	userName string // для «кто создал сделку»
+	chatType models.ChatType
 }
 
 func (a *App) handle(ctx context.Context, _ *tg.Bot, upd *models.Update) {
@@ -115,12 +117,12 @@ func (a *App) handle(ctx context.Context, _ *tg.Bot, upd *models.Update) {
 	switch {
 	case upd.Message != nil && upd.Message.From != nil:
 		chatID, userID = upd.Message.Chat.ID, upd.Message.From.ID
-		c = &Ctx{msg: upd.Message}
+		c = &Ctx{msg: upd.Message, chatType: upd.Message.Chat.Type, userName: displayName(upd.Message.From)}
 	case upd.CallbackQuery != nil:
 		userID = upd.CallbackQuery.From.ID
 		if m := upd.CallbackQuery.Message.Message; m != nil {
 			chatID = m.Chat.ID
-			c = &Ctx{cb: upd.CallbackQuery, cbMsgID: m.ID}
+			c = &Ctx{cb: upd.CallbackQuery, cbMsgID: m.ID, chatType: m.Chat.Type, userName: displayName(&upd.CallbackQuery.From)}
 		} else if im := upd.CallbackQuery.Message.InaccessibleMessage; im != nil {
 			chatID = im.Chat.ID
 			c = &Ctx{cb: upd.CallbackQuery, cbMsgID: im.MessageID}
@@ -128,6 +130,15 @@ func (a *App) handle(ctx context.Context, _ *tg.Bot, upd *models.Update) {
 			return
 		}
 	default:
+		return
+	}
+	// Группы (чат руководителей): только команды /bind, /unbind, /today, /report
+	if c.chatType != "" && c.chatType != models.ChatTypePrivate {
+		if c.msg != nil {
+			c.Context, c.app, c.chatID, c.userID = ctx, a, chatID, userID
+			c.s = &Session{Data: map[string]string{}}
+			a.onGroupMessage(c, len(a.cfg.AdminIDs) == 0 || a.cfg.AdminIDs[userID])
+		}
 		return
 	}
 	// Если задан ADMIN_IDS — бот отвечает только этим пользователям (остальных тихо игнорируем).
@@ -154,6 +165,20 @@ func (a *App) handle(ctx context.Context, _ *tg.Bot, upd *models.Update) {
 	} else {
 		a.onCallback(c)
 	}
+}
+
+func displayName(u *models.User) string {
+	if u == nil {
+		return ""
+	}
+	name := strings.TrimSpace(u.FirstName + " " + u.LastName)
+	if u.Username != "" {
+		if name == "" {
+			return "@" + u.Username
+		}
+		return name + " (@" + u.Username + ")"
+	}
+	return name
 }
 
 // ─── Отправка сообщений ───────────────────────────────────────────────────────
@@ -356,6 +381,14 @@ func (a *App) onMessage(c *Ctx) {
 		c.s.Clear()
 		a.showSettings(c, "")
 		return
+	case navBuybacks:
+		c.s.Clear()
+		a.showBuybacksMenu(c)
+		return
+	case navProfit:
+		c.s.Clear()
+		a.showProfitMenu(c)
+		return
 	}
 
 	state := c.s.State
@@ -383,6 +416,12 @@ func (a *App) onMessage(c *Ctx) {
 		a.varsKeyInput(c, text)
 	case state == stVarLabel:
 		a.varsLabelInput(c, text)
+	case strings.HasPrefix(state, "bb:"):
+		a.buybackMessage(c, text)
+	case strings.HasPrefix(state, "ref:"):
+		a.referrerMessage(c, text)
+	case state == stProfitDate:
+		a.profitDateInput(c, text)
 	}
 }
 
@@ -419,5 +458,15 @@ func (a *App) onCallback(c *Ctx) {
 		a.reportCallback(c, head, rest)
 	case "tpl", "vars":
 		a.templatesCallback(c, head, rest)
+	case "bb":
+		a.buybackCallback(c, rest)
+	case "ref", "coref":
+		a.referrerCallback(c, head, rest)
+	case "profit":
+		a.profitCallback(c, rest)
+	case "notify":
+		a.notifyCallback(c, rest)
+	case "dealx":
+		a.dealExtraCallback(c, rest)
 	}
 }

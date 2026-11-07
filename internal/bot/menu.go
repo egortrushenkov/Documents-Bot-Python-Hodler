@@ -96,6 +96,8 @@ func settingsText(s map[string]string) string {
 		"<b>БИК:</b> " + g("bank_bik"),
 		"\n<b>Кошелёк:</b> <code>" + g("wallet") + "</code>",
 		"\n<b>Директор:</b> " + g("director_name") + " (" + g("director_title") + ")",
+		"\n📈 <b>Прибыль:</b> налог " + g("tax_percent") + "% от ЧКД · комиссия банка " + g("bank_fee_percent") +
+			"% · отчёт «" + g("report_title") + "»",
 	}
 	return strings.Join(lines, "\n")
 }

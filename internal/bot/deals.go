@@ -12,6 +12,8 @@ import (
 	tg "github.com/go-telegram/bot"
 
 	"hodler-doc-bot/internal/cleanup"
+	"hodler-doc-bot/internal/docgen"
+	"hodler-doc-bot/internal/profit"
 	"hodler-doc-bot/internal/storage"
 	"hodler-doc-bot/internal/util"
 )
@@ -49,6 +51,22 @@ func dealCardText(d *storage.Deal, signed int) string {
 	}
 	if txs := storage.ParseTxs(d.Transactions); len(txs) > 1 {
 		lines = append(lines, fmt.Sprintf("<b>Транзакций:</b> %d", len(txs)))
+	}
+	if profit.Profitable(d) {
+		lines = append(lines, "", profitLines(d))
+	}
+	if d.Cancelled() {
+		lines = append([]string{"❌ <b>СДЕЛКА ОТМЕНЕНА</b>"}, lines...)
+	}
+	meta := []string{}
+	if d.Version > 1 {
+		meta = append(meta, fmt.Sprintf("версия %d", d.Version))
+	}
+	if d.CreatedBy != "" {
+		meta = append(meta, "создал "+escape(d.CreatedBy))
+	}
+	if len(meta) > 0 {
+		lines = append(lines, "<i>"+strings.Join(meta, " · ")+"</i>")
 	}
 	lines = append(lines, "", fmt.Sprintf("<b>Подписанных документов:</b> %d", signed))
 	return strings.Join(lines, "\n")
@@ -155,6 +173,9 @@ func (a *App) dealsCallback(c *Ctx, head, rest string) {
 			"(сами файлы в чатах Telegram останутся).", confirmDealDeleteKB(id))
 
 	case "deal_del_yes":
+		if d, _ := a.st.Deal(c, id); d != nil {
+			a.refreshDealNotify(id, fmt.Sprintf("🗑 Сделка №%s удалена из журнала%s", escape(d.DealNumber), by(c.userName)))
+		}
 		if err := a.st.DeleteDeal(c, id); err != nil {
 			c.fail(err)
 			return
@@ -221,7 +242,7 @@ func (a *App) showDealCard(c *Ctx, id int64) {
 		c.fail(err)
 		return
 	}
-	c.Edit(dealCardText(d, signed), dealCardKB(id, d.DocxFileID != "" || d.PDFFileID != "", signed))
+	c.Edit(dealCardText(d, signed), dealCardKB2(d, d.DocxFileID != "" || d.PDFFileID != "", signed))
 }
 
 // signedInput — приём файлов подписанных актов (в БД — только file_id).
@@ -375,4 +396,96 @@ func writeZip(path string, fill func(add func(path, name string) error) error) e
 		err = cerr
 	}
 	return err
+}
+
+// ─── Переделка, отмена, восстановление, откупка из карточки сделки ────────────
+
+func (a *App) dealExtraCallback(c *Ctx, rest string) {
+	action, idStr, _ := strings.Cut(rest, ":")
+	id, _ := parseID(idStr)
+	d, err := a.st.Deal(c, id)
+	if err != nil || d == nil {
+		c.Answer("Сделка не найдена", true)
+		return
+	}
+	switch action {
+	case "edit":
+		a.startDealEdit(c, d)
+	case "cancel":
+		c.EditPlain(fmt.Sprintf("⚠️ Отменить сделку №%s (%s)?\n\nОна останется в журнале с пометкой «отменена», "+
+			"но пропадёт из отчётов. Руководители получат уведомление. Восстановить можно в любой момент.",
+			d.DealNumber, d.ClientName), ikb(row(
+			btn("✅ Да, отменить", "dealx:cancelyes:"+idStr), btn("❌ Нет", "deal:"+idStr))))
+	case "cancelyes", "restore":
+		status, msg := "cancelled", "❌ Сделка №%s отменена"
+		if action == "restore" {
+			status, msg = "active", "↩️ Сделка №%s восстановлена"
+		}
+		if err := a.st.SetDealStatus(c, id, status); err != nil {
+			c.fail(err)
+			return
+		}
+		a.refreshDealNotify(id, fmt.Sprintf(msg, escape(d.DealNumber))+by(c.userName))
+		if d.BuybackID.Valid { // баланс откупки изменился
+			a.refreshBuybackNotify(d.BuybackID.Int64, "")
+		}
+		a.showDealCard(c, id)
+	case "bb":
+		var rows []kbRow
+		rows = append(rows, row(btn("➕ Новая откупка для этой сделки", "dealx:bbnew:"+idStr)))
+		list, _ := a.st.RecentBuybacks(c, 8)
+		for _, b := range list {
+			if b.Cancelled() {
+				continue
+			}
+			rows = append(rows, row(btn(util.TruncRunes(fmt.Sprintf("🔗 В откупку №%d · %s · %s по %s", b.ID, b.BuyDate,
+				profit.ShortName(b.SupplierName), util.RU(b.Rate, 2)), 60), fmt.Sprintf("dealx:bblink:%d:%d", id, b.ID))))
+		}
+		rows = append(rows, row(btn("◀️ Назад", "deal:"+idStr)))
+		c.EditPlain("Закрыть сделку №"+d.DealNumber+" откупкой:", ikb(rows...))
+	case "bbnew":
+		c.s.Clear()
+		setSel(c, []int64{id})
+		a.showSelect(c)
+	}
+	if bbIDStr, ok := strings.CutPrefix(rest, "bblink:"+idStr+":"); ok && action == "bblink" {
+		bbID, _ := parseID(bbIDStr)
+		if err := a.st.LinkDealsToBuyback(c, bbID, id); err != nil {
+			c.fail(err)
+			return
+		}
+		a.refreshDealNotify(id, "")
+		a.refreshBuybackNotify(bbID, fmt.Sprintf("➕ К откупке №%d добавлена сделка №%s %s", bbID, escape(d.DealNumber), by(c.userName)))
+		a.showDealCard(c, id)
+	}
+}
+
+// startDealEdit загружает сделку в черновик акта и открывает подтверждение
+// с меню правки; «Генерировать» перезапишет сделку и документы.
+func (a *App) startDealEdit(c *Ctx, d *storage.Deal) {
+	if !d.CompanyID.Valid {
+		c.Answer("У сделки нет клиента в базе — переделать нельзя", true)
+		return
+	}
+	co, _ := a.st.Company(c, d.CompanyID.Int64)
+	if co == nil {
+		c.Answer("Клиент удалён из базы — переделать нельзя", true)
+		return
+	}
+	txs := storage.ParseTxs(d.Transactions)
+	fields := map[string]string{
+		"act_type": d.ActType, "company_id": fmt.Sprint(d.CompanyID.Int64), "deal_number": d.DealNumber,
+		"deal_date": d.DealDate, "execution_date": d.ExecutionDate, "va_type": d.VAType, "network": d.Network,
+		"va_amount": util.Num(d.VAAmount), "fiat_amount": util.Num(d.FiatAmount), "exchange_rate": d.ExchangeRate,
+		"kvvo": d.KVVO, "client_wallet": d.ClientWallet, "operator_wallet": d.OperatorWallet,
+		"commission_fiat": d.CommissionFiat, "commission_va": d.CommissionVA,
+		"editing_deal_id": fmt.Sprint(d.ID),
+	}
+	if len(txs) == 1 {
+		fields["tx_hash"] = txs[0].TxHash
+		txs[0].VAAmount = fields["va_amount"]
+	}
+	c.s.Clear()
+	c.s.Act = &docgen.Draft{Fields: fields, Txs: txs}
+	a.showConfirm(c)
 }

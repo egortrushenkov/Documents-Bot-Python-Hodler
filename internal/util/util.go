@@ -120,3 +120,23 @@ func FormatNumber(value string) string {
 	parts[0] = groupThousands(parts[0])
 	return strings.Join(parts, ".")
 }
+
+// RU — число по-русски: разряды через пробел, запятая, ровно dec знаков.
+// RU(22629.97, 2) = «22 629,97».
+func RU(f float64, dec int) string {
+	s := strconv.FormatFloat(f, 'f', dec, 64)
+	intPart, frac, _ := strings.Cut(s, ".")
+	out := groupThousands(intPart)
+	if dec > 0 {
+		out += "," + frac
+	}
+	return out
+}
+
+// RUAmount — сумма: без копеек, если целая (1 850 000), иначе 2 знака.
+func RUAmount(f float64) string {
+	if math.Abs(f-math.Round(f)) < 0.005 {
+		return RU(math.Round(f), 0)
+	}
+	return RU(f, 2)
+}

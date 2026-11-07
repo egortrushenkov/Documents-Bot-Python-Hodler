@@ -117,6 +117,9 @@ type Company struct {
 	BankBIK     string
 	Wallet      string
 	Resident    string
+
+	ReferrerID      sql.NullInt64   // закреплённый реферал
+	ReferralPercent sql.NullFloat64 // NULL — процент самого реферала
 }
 
 // CompanyColumns — редактируемые поля компании (белый список для UPDATE).
@@ -137,13 +140,14 @@ func (c *Company) Map() map[string]string {
 }
 
 const companySelect = `SELECT id, full_name, short_name, inn, kpp, reg_number, address, kio,
-	inn_rf, kpp_rf, bank_name, bank_account, bank_bik, wallet, resident FROM companies`
+	inn_rf, kpp_rf, bank_name, bank_account, bank_bik, wallet, resident,
+	referrer_id, referral_percent FROM companies`
 
 func scanCompany(sc interface{ Scan(...any) error }) (*Company, error) {
 	var c Company
 	var f [14]Str
 	if err := sc.Scan(&c.ID, &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &f[7],
-		&f[8], &f[9], &f[10], &f[11], &f[12], &f[13]); err != nil {
+		&f[8], &f[9], &f[10], &f[11], &f[12], &f[13], &c.ReferrerID, &c.ReferralPercent); err != nil {
 		return nil, err
 	}
 	c.FullName, c.ShortName, c.INN, c.KPP = string(f[0]), string(f[1]), string(f[2]), string(f[3])

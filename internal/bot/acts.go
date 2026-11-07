@@ -607,7 +607,11 @@ func (a *App) showConfirm(c *Ctx) {
 		c.fail(err)
 		return
 	}
-	c.Reply(dealSummary(d, client), confirmActKB())
+	prefix := ""
+	if d.Get("editing_deal_id") != "" {
+		prefix = "✏️ <b>Переделка заявки</b> — измените поля и сгенерируйте заново\n\n"
+	}
+	c.Reply(prefix+dealSummary(d, client), confirmActKB())
 }
 
 // ─── Генерация ────────────────────────────────────────────────────────────────
@@ -697,6 +701,9 @@ func (a *App) generateAct(c *Ctx) {
 		c.Send("⚠️ PDF не создан:\n<code>"+escape(pdfErr.Error())+"</code>", nil)
 	}
 
+	if len(d.Txs) <= 1 && actType != "invoice" { // одна транзакция = вся сумма (с учётом правок)
+		d.Txs = []storage.Tx{{VAAmount: d.Get("va_amount"), TxHash: d.Get("tx_hash")}}
+	}
 	txsJSON, _ := json.Marshal(d.Txs)
 	if d.Txs == nil {
 		txsJSON = []byte("[]")
@@ -706,7 +713,7 @@ func (a *App) generateAct(c *Ctx) {
 		docxFileID = msgDocx.Document.FileID
 	}
 	// Журнал сделок: file_id Telegram вместо локальных файлов
-	dealID, err := a.st.AddDeal(c, &storage.Deal{
+	nd := &storage.Deal{
 		ActType:        actType,
 		DealNumber:     d.Get("deal_number"),
 		DealDate:       d.Get("deal_date"),
@@ -732,10 +739,52 @@ func (a *App) generateAct(c *Ctx) {
 		PDFFileID:      pdfFileID,
 		DocxName:       filepath.Base(docxPath),
 		PDFName:        pdfName,
-	})
-	if err != nil {
-		c.fail(err)
-		return
+		CreatedBy:      c.userName,
+	}
+	// Снимок параметров прибыли на момент сделки: поздняя смена настроек
+	// или реферала клиента не переписывает историю
+	nd.TaxPercent, nd.FeePercent = 5, 0.05
+	if v, ok := util.ParseFloat(op["tax_percent"]); ok {
+		nd.TaxPercent = v
+	}
+	if v, ok := util.ParseFloat(op["bank_fee_percent"]); ok {
+		nd.FeePercent = v
+	}
+	nd.ReferrerName, nd.ReferralPercent, _ = a.st.CompanyReferral(c, client)
+
+	var dealID int64
+	editingID, editing := parseID(d.Get("editing_deal_id"))
+	if editing {
+		old, _ := a.st.Deal(c, editingID)
+		nd.ID, dealID = editingID, editingID
+		if err := a.st.UpdateDeal(c, nd); err != nil {
+			c.fail(err)
+			return
+		}
+		if old != nil {
+			nd.Version = old.Version + 1
+			nd.Status = old.Status
+			nd.BuybackID = old.BuybackID
+			changes := dealDiff(old, nd)
+			if len(changes) == 0 {
+				changes = []string{"• документы перегенерированы, данные без изменений"}
+			}
+			a.refreshDealNotify(dealID, fmt.Sprintf("✏️ Сделка №%s изменена (версия %d)%s:\n%s",
+				escape(nd.DealNumber), nd.Version, by(c.userName), strings.Join(changes, "\n")))
+			if old.BuybackID.Valid {
+				a.refreshBuybackNotify(old.BuybackID.Int64, "")
+			}
+		}
+	} else {
+		if dealID, err = a.st.AddDeal(c, nd); err != nil {
+			c.fail(err)
+			return
+		}
+		if actType != "invoice" { // счёт-заявка — ещё не сделка
+			if saved, _ := a.st.Deal(c, dealID); saved != nil {
+				a.notifyNew("deal", dealID, dealNotifyText(saved))
+			}
+		}
 	}
 	// Двигаем счётчики номеров (клиентский и общий)
 	kind := "act"
@@ -756,5 +805,9 @@ func (a *App) generateAct(c *Ctx) {
 		warn = "\n⚠️ Дата заявки не распознана — сделка не попадёт в месячный отчёт ФН."
 	}
 	c.s.Clear()
-	c.SendPlain(fmt.Sprintf("💾 Сделка №%s сохранена в журнал.%s", number, warn), afterGenerateKB(dealID))
+	verb := "сохранена в журнал"
+	if editing {
+		verb = "переделана: документы и журнал обновлены"
+	}
+	c.SendPlain(fmt.Sprintf("💾 Сделка №%s %s.%s", number, verb, warn), afterGenerateKB(dealID))
 }

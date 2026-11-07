@@ -6,6 +6,7 @@
 //	hodler-bot backup <файл>   — консистентная копия БД
 //	hodler-bot export [-no-env] [файл.tar.gz] — полная копия (БД + шаблоны + .env) для переноса
 //	hodler-bot import [-force] [-no-env] <файл.tar.gz> — развернуть копию на новом сервере
+//	hodler-bot purge-deals [-yes] — очистить журнал сделок (компании, реквизиты, нумерация остаются)
 package main
 
 import (
@@ -87,9 +88,11 @@ func run() error {
 		return st.BackupTo(ctx, os.Args[2])
 	case "export":
 		return runExport(ctx, cfg, st, os.Args[2:])
+	case "purge-deals":
+		return runPurge(ctx, cfg, st, os.Args[2:])
 	case "", "run":
 	default:
-		return fmt.Errorf("неизвестная команда %q (run | migrate [-status] | backup <файл> | export | import)", cmd)
+		return fmt.Errorf("неизвестная команда %q (run | migrate [-status] | backup <файл> | export | import | purge-deals)", cmd)
 	}
 
 	if cfg.BotToken == "" {
@@ -187,5 +190,36 @@ func runImport(ctx context.Context, cfg *config.Config, args []string) error {
 		fmt.Printf("  применено миграций: %d\n", n)
 	}
 	fmt.Println("Можно запускать бота.")
+	return nil
+}
+
+func runPurge(ctx context.Context, cfg *config.Config, st *storage.Store, args []string) error {
+	fs := flag.NewFlagSet("purge-deals", flag.ExitOnError)
+	yes := fs.Bool("yes", false, "подтвердить удаление")
+	_ = fs.Parse(args)
+	if _, err := st.Migrate(ctx, cfg.BackupBeforeMigrate); err != nil {
+		return err
+	}
+	var deals, signed, buybacks int
+	db := st.DB()
+	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM deals").Scan(&deals)
+	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM signed_docs WHERE deal_id IS NOT NULL").Scan(&signed)
+	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM buybacks").Scan(&buybacks)
+	fmt.Printf("Будет удалено: сделок — %d, подписанных документов — %d, откупок — %d.\n", deals, signed, buybacks)
+	fmt.Println("Останутся: компании, рефералы, поставщики, реквизиты, шаблоны, свои переменные, КВВО, счётчики номеров.")
+	if !*yes {
+		fmt.Println("Чтобы удалить, повторите с флагом -yes (перед удалением будет сделана резервная копия).")
+		return nil
+	}
+	backup := fmt.Sprintf("%s.before-purge-%s", cfg.DBPath, time.Now().Format("20060102-150405"))
+	if err := st.BackupTo(ctx, backup); err != nil {
+		return fmt.Errorf("резервная копия: %w", err)
+	}
+	fmt.Println("Резервная копия:", backup)
+	d, s, err := st.PurgeDeals(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Готово: удалено сделок — %d, подписанных документов — %d.\n", d, s)
 	return nil
 }

@@ -36,6 +36,11 @@ type Config struct {
 	CleanupIntervalMin  int
 	PDFConcurrency      int
 	BackupBeforeMigrate bool
+
+	// Отслеживание кошельков
+	TronGridKey       string // необязателен (без ключа — ограничение частоты запросов)
+	EtherscanKey      string // нужен для ERC-20 и BEP-20
+	WalletPollSeconds int    // 0 — не отслеживать
 }
 
 func Load() *Config {
@@ -52,6 +57,9 @@ func Load() *Config {
 		CleanupIntervalMin:  envInt("CLEANUP_INTERVAL_MIN", 60),
 		PDFConcurrency:      envInt("PDF_CONCURRENCY", 1),
 		BackupBeforeMigrate: env("DB_BACKUP_BEFORE_MIGRATE", "1") != "0",
+		TronGridKey:         os.Getenv("TRONGRID_API_KEY"),
+		EtherscanKey:        os.Getenv("ETHERSCAN_API_KEY"),
+		WalletPollSeconds:   envInt("WALLET_POLL_SECONDS", 60),
 	}
 	ids := os.Getenv("ADMIN_IDS")
 	if strings.TrimSpace(ids) == "" {

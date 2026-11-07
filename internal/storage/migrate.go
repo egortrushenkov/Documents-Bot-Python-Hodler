@@ -35,6 +35,7 @@ var Migrations = []Migration{
 	{Version: 5, Name: "buybacks_profit_notifications", SQLFile: "migrations/0005_buybacks_profit_notifications.sql"},
 	{Version: 6, Name: "treasury", SQLFile: "migrations/0006_treasury.sql"},
 	{Version: 7, Name: "referral_payouts", SQLFile: "migrations/0007_referral_payouts.sql"},
+	{Version: 8, Name: "accounts_wallets", SQLFile: "migrations/0008_accounts_wallets.sql"},
 }
 
 // Колонка resident появилась в Python-версии позже — в старых базах её нет.

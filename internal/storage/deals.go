@@ -92,6 +92,10 @@ type Deal struct {
 	ReferrerName    string
 	ReferralPercent float64
 
+	// Выбранные в сделке реквизиты (миграция 0008)
+	ClientBankID   sql.NullInt64
+	OperatorBankID sql.NullInt64
+
 	// Заполняется при чтении из связанной откупки
 	BuyRate      float64
 	SupplierName string
@@ -106,7 +110,8 @@ const dealCols = `act_type, deal_number, deal_date, deal_date_iso, execution_dat
 	operator_wallet, commission_fiat, commission_va, transactions,
 	docx_file_id, pdf_file_id, docx_name, pdf_name,
 	status, version, updated_at, created_by, buyback_id,
-	tax_percent, fee_percent, referrer_name, referral_percent`
+	tax_percent, fee_percent, referrer_name, referral_percent,
+	client_bank_id, operator_bank_id`
 
 func dealArgs(d *Deal) []any {
 	return []any{d.ActType, d.DealNumber, d.DealDate, d.DealDateISO, d.ExecutionDate,
@@ -115,7 +120,8 @@ func dealArgs(d *Deal) []any {
 		d.OperatorWallet, d.CommissionFiat, d.CommissionVA, d.Transactions,
 		d.DocxFileID, d.PDFFileID, d.DocxName, d.PDFName,
 		d.Status, d.Version, d.UpdatedAt, d.CreatedBy, d.BuybackID,
-		d.TaxPercent, d.FeePercent, d.ReferrerName, d.ReferralPercent}
+		d.TaxPercent, d.FeePercent, d.ReferrerName, d.ReferralPercent,
+		d.ClientBankID, d.OperatorBankID}
 }
 
 func normalizeDeal(d *Deal) {
@@ -205,7 +211,7 @@ func scanDeal(sc interface{ Scan(...any) error }) (*Deal, error) {
 		&s[8], &s[9], &va, &fiat, &s[10], &s[11], &s[12], &s[13], &s[14], &s[15], &s[16],
 		&s[17], &s[18], &s[19], &s[20], &s[21],
 		&status, &version, &updated, &createdBy, &d.BuybackID, &tax, &fee, &refName, &refPct,
-		&buyRate, &supplier)
+		&d.ClientBankID, &d.OperatorBankID, &buyRate, &supplier)
 	if err != nil {
 		return nil, err
 	}

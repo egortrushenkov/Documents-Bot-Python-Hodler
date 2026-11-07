@@ -1,9 +1,11 @@
 package bot
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
+	"hodler-doc-bot/internal/storage"
 	"hodler-doc-bot/internal/util"
 )
 
@@ -36,6 +38,8 @@ const (
 	stActCommissionFiat = "act:commission_fiat"
 	stActCommissionVA   = "act:commission_va"
 	stActExecutionDate  = "act:execution_date"
+	stActClientBank     = "act:client_bank"
+	stActOperatorBank   = "act:operator_bank"
 	stActConfirm        = "act:confirm"
 	stActEditField      = "act:edit_field"
 
@@ -108,7 +112,10 @@ func (a *App) showSettings(c *Ctx, prefix string) {
 		c.fail(err)
 		return
 	}
-	c.Reply(prefix+settingsText(s), settingsKB())
+	banks, _ := a.st.BankAccounts(c, storage.OwnerOperator, 0)
+	wallets, _ := a.st.Wallets(c, storage.OwnerOperator, 0)
+	c.Reply(prefix+settingsText(s)+fmt.Sprintf("\n\n<i>Счетов: %d, кошельков: %d — в реквизитах выше основные (⭐). "+
+		"Управление — кнопками «🏦 Наши счета» и «₿ Наши кошельки».</i>", len(banks), len(wallets)), settingsKB())
 }
 
 func (a *App) editSetting(c *Ctx, key string) {

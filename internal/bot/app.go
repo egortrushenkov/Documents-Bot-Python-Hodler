@@ -16,6 +16,7 @@ import (
 	tg "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"hodler-doc-bot/internal/chain"
 	"hodler-doc-bot/internal/config"
 	"hodler-doc-bot/internal/docgen"
 	"hodler-doc-bot/internal/pdf"
@@ -23,10 +24,11 @@ import (
 )
 
 type App struct {
-	cfg *config.Config
-	st  *storage.Store
-	pdf *pdf.Converter
-	b   *tg.Bot
+	cfg   *config.Config
+	st    *storage.Store
+	pdf   *pdf.Converter
+	b     *tg.Bot
+	chain *chain.Client
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -64,6 +66,7 @@ func New(cfg *config.Config, st *storage.Store, opts ...tg.Option) (*App, error)
 		cfg:      cfg,
 		st:       st,
 		pdf:      pdf.New(cfg.LibreOfficePath, cfg.PDFConcurrency),
+		chain:    chain.New(cfg.TronGridKey, cfg.EtherscanKey),
 		sessions: map[string]*Session{},
 		http:     &http.Client{Timeout: 5 * time.Minute},
 	}
@@ -82,7 +85,10 @@ func New(cfg *config.Config, st *storage.Store, opts ...tg.Option) (*App, error)
 }
 
 // Run запускает long polling до отмены ctx.
-func (a *App) Run(ctx context.Context) { a.b.Start(ctx) }
+func (a *App) Run(ctx context.Context) {
+	go a.watchLoop(ctx)
+	a.b.Start(ctx)
+}
 
 func (a *App) session(chatID, userID int64) *Session {
 	key := fmt.Sprintf("%d:%d", chatID, userID)
@@ -422,6 +428,8 @@ func (a *App) onMessage(c *Ctx) {
 		a.varsLabelInput(c, text)
 	case strings.HasPrefix(state, "bb:"):
 		a.buybackMessage(c, text)
+	case strings.HasPrefix(state, "acc:"), strings.HasPrefix(state, "wal:"):
+		a.accountsMessage(c, text)
 	case strings.HasPrefix(state, "tr:"):
 		a.treasuryMessage(c, text)
 	case strings.HasPrefix(state, "ref:"):
@@ -455,7 +463,7 @@ func (a *App) onCallback(c *Ctx) {
 		"edit_company_field", "resident":
 		a.companyCallback(c, head, rest)
 	case "act_type", "sel_company", "skip", "va_type", "network", "kvvo", "kvvo_del",
-		"tx", "act", "edit_act_field":
+		"tx", "act", "edit_act_field", "cw", "ow", "cb", "ob":
 		a.actCallback(c, head, rest)
 	case "deals", "deals_c", "deal", "deal_docs", "deal_signed", "deal_del", "deal_del_yes",
 		"deal_attach", "signed", "arch":
@@ -472,6 +480,8 @@ func (a *App) onCallback(c *Ctx) {
 		a.profitCallback(c, rest)
 	case "tr":
 		a.treasuryCallback(c, rest)
+	case "acc", "wal":
+		a.accountsCallback(c, head, rest)
 	case "notify":
 		a.notifyCallback(c, rest)
 	case "dealx":

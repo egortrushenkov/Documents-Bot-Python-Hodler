@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"hodler-doc-bot/internal/chain"
 	"hodler-doc-bot/internal/cleanup"
 	"hodler-doc-bot/internal/docgen"
 	"hodler-doc-bot/internal/storage"
@@ -202,11 +204,74 @@ func (a *App) actCallback(c *Ctx, head, rest string) {
 	case head == "tx":
 		a.txCallback(c, rest)
 
+	case head == "cw" || head == "ow":
+		if st != stActClientWallet && st != stActOperatorWallet && st != stActEditField {
+			return
+		}
+		w, _ := a.st.Wallet(c, mustID(rest))
+		if w == nil {
+			return
+		}
+		key := "client_wallet"
+		if head == "ow" {
+			key = "operator_wallet"
+		}
+		c.act().Fields[key] = w.Address
+		switch {
+		case st == stActEditField:
+			a.showConfirm(c)
+		case head == "cw":
+			a.askOperatorWallet(c)
+		default:
+			a.afterOperatorWallet(c)
+		}
+	case head == "cb" || head == "ob":
+		if st != stActClientBank && st != stActOperatorBank && st != stActEditField {
+			return
+		}
+		key := "cl_bank_id"
+		if head == "ob" {
+			key = "op_bank_id"
+		}
+		c.act().Fields[key] = rest
+		switch {
+		case st == stActEditField:
+			a.showConfirm(c)
+		case head == "cb":
+			a.askOperatorBank(c)
+		default:
+			a.afterBanks(c)
+		}
+
 	case head == "act" && rest == "confirm_show" && (st == stActConfirm || st == stActEditField):
 		a.showConfirm(c)
 	case head == "act" && rest == "edit_menu" && st == stActConfirm:
 		c.s.State = stActEditField
 		c.EditPlain("Выберите поле для изменения:", editActFieldsKB())
+	case head == "edit_act_field" && st == stActEditField && (rest == "client_bank" || rest == "op_bank"):
+		d := c.act()
+		if rest == "client_bank" {
+			cid, _ := parseID(d.Get("company_id"))
+			banks, _ := a.st.BankAccounts(c, storage.OwnerCompany, cid)
+			cur, _ := parseID(d.Get("cl_bank_id"))
+			c.EditPlain("Реквизиты клиента:", ikb(append(bankRows(banks, "cb", cur), row(btn("◀️ Назад", "act:confirm_show")))...))
+		} else {
+			banks, _ := a.st.BankAccounts(c, storage.OwnerOperator, 0)
+			cur, _ := parseID(d.Get("op_bank_id"))
+			c.EditPlain("Наши реквизиты:", ikb(append(bankRows(banks, "ob", cur), row(btn("◀️ Назад", "act:confirm_show")))...))
+		}
+	case head == "edit_act_field" && st == stActEditField && (rest == "client_wallet" || rest == "operator_wallet"):
+		d := c.act()
+		d.Fields["editing_field"] = rest
+		var rows []kbRow
+		if rest == "client_wallet" {
+			cid, _ := parseID(d.Get("company_id"))
+			rows = a.walletRows(c, storage.OwnerCompany, cid, "cw", d.Get("network"), d.Get(rest))
+		} else {
+			rows = a.walletRows(c, storage.OwnerOperator, 0, "ow", d.Get("network"), d.Get(rest))
+		}
+		rows = append(rows, row(btn("◀️ Назад", "act:confirm_show")))
+		c.Edit("✏️ <b>"+actFieldLabels[rest]+"</b>\nТекущий: <code>"+escape(d.Get(rest))+"</code>\n\nВыберите или пришлите адрес текстом:", ikb(rows...))
 	case head == "edit_act_field" && st == stActEditField:
 		label := actFieldLabels[rest]
 		if label == "" {
@@ -490,22 +555,103 @@ func (a *App) askKVVO(c *Ctx) {
 	c.Reply(kvvoPrompt, kvvoKB(custom))
 }
 
+// walletRows — кнопки выбора кошелька; кошельки нужной сети — первыми.
+func (a *App) walletRows(c *Ctx, ownerType string, ownerID int64, prefix, network, current string) []kbRow {
+	ws, _ := a.st.Wallets(c, ownerType, ownerID)
+	net := chain.Normalize(network)
+	sort.SliceStable(ws, func(i, j int) bool {
+		return chain.Normalize(ws[i].Network) == net && chain.Normalize(ws[j].Network) != net
+	})
+	var rows []kbRow
+	for _, w := range ws {
+		mark := "₿"
+		if w.Address == current {
+			mark = "✅"
+		}
+		warn := ""
+		if w.Network != "" && net != "" && chain.Normalize(w.Network) != net {
+			warn = " ⚠️"
+		}
+		rows = append(rows, row(btn(util.TruncRunes(mark+" "+w.Title()+warn, 60), fmt.Sprintf("%s:%d", prefix, w.ID))))
+	}
+	return rows
+}
+
 func (a *App) askClientWallet(c *Ctx) {
+	d := c.act()
 	c.s.State = stActClientWallet
-	c.Reply("<b>Шаг: Кошелёк клиента</b>\nИз карточки компании: <code>"+escape(c.act().Get("client_wallet"))+
-		"</code>\n\nВведите другой адрес или нажмите «Использовать»:",
-		skipKB("skip:client_wallet", "Из карточки компании"))
+	cid, _ := parseID(d.Get("company_id"))
+	rows := a.walletRows(c, storage.OwnerCompany, cid, "cw", d.Get("network"), d.Get("client_wallet"))
+	text := "<b>Шаг: Кошелёк клиента</b>\n"
+	if len(rows) > 0 {
+		text += "Выберите кошелёк клиента или пришлите другой адрес текстом:"
+	} else {
+		text += "В карточке клиента кошельков нет — пришлите адрес текстом:"
+	}
+	if cur := d.Get("client_wallet"); cur != "" {
+		rows = append(rows, row(btn("⏩ "+storage.ShortAddr(cur)+" (основной)", "skip:client_wallet")))
+	}
+	c.Reply(text, ikb(rows...))
 }
 
 func (a *App) askOperatorWallet(c *Ctx) {
+	d := c.act()
 	c.s.State = stActOperatorWallet
-	c.Reply("<b>Шаг: Кошелёк оператора</b>\nИз настроек: <code>"+escape(c.act().Get("operator_wallet"))+
-		"</code>\n\nВведите другой адрес или нажмите «Использовать»:",
-		skipKB("skip:operator_wallet", "Из настроек"))
+	rows := a.walletRows(c, storage.OwnerOperator, 0, "ow", d.Get("network"), d.Get("operator_wallet"))
+	if cur := d.Get("operator_wallet"); cur != "" {
+		rows = append(rows, row(btn("⏩ Оставить "+storage.ShortAddr(cur), "skip:operator_wallet")))
+	}
+	c.Reply("<b>Шаг: Наш кошелёк</b>\nВыберите, на какой/с какого кошелька идёт перевод, или пришлите адрес текстом:", ikb(rows...))
 }
 
-// afterOperatorWallet: счёт-заявка не дробится на транзакции — сразу к комиссии.
-func (a *App) afterOperatorWallet(c *Ctx) {
+func bankRows(banks []*storage.BankAccount, prefix string, current int64) []kbRow {
+	var rows []kbRow
+	for _, b := range banks {
+		mark := "🏦"
+		if b.ID == current || (current == 0 && b.IsDefault) {
+			mark = "✅"
+		}
+		rows = append(rows, row(btn(util.TruncRunes(mark+" "+b.Title(), 60), fmt.Sprintf("%s:%d", prefix, b.ID))))
+	}
+	return rows
+}
+
+// afterOperatorWallet → выбор реквизитов (если их несколько) → транзакции.
+func (a *App) afterOperatorWallet(c *Ctx) { a.askClientBank(c) }
+
+func (a *App) askClientBank(c *Ctx) {
+	d := c.act()
+	cid, _ := parseID(d.Get("company_id"))
+	banks, _ := a.st.BankAccounts(c, storage.OwnerCompany, cid)
+	if len(banks) <= 1 {
+		if len(banks) == 1 {
+			d.Fields["cl_bank_id"] = fmt.Sprint(banks[0].ID)
+		}
+		a.askOperatorBank(c)
+		return
+	}
+	c.s.State = stActClientBank
+	cur, _ := parseID(d.Get("cl_bank_id"))
+	c.Reply("<b>Шаг: Реквизиты клиента</b>\nКакие банковские реквизиты клиента указать в документе?", ikb(bankRows(banks, "cb", cur)...))
+}
+
+func (a *App) askOperatorBank(c *Ctx) {
+	d := c.act()
+	banks, _ := a.st.BankAccounts(c, storage.OwnerOperator, 0)
+	if len(banks) <= 1 {
+		if len(banks) == 1 {
+			d.Fields["op_bank_id"] = fmt.Sprint(banks[0].ID)
+		}
+		a.afterBanks(c)
+		return
+	}
+	c.s.State = stActOperatorBank
+	cur, _ := parseID(d.Get("op_bank_id"))
+	c.Reply("<b>Шаг: Наши реквизиты</b>\nНа какой наш счёт / с какого счёта?", ikb(bankRows(banks, "ob", cur)...))
+}
+
+// afterBanks: счёт-заявка не дробится на транзакции — сразу к комиссии.
+func (a *App) afterBanks(c *Ctx) {
 	if c.act().Get("act_type") == "invoice" {
 		a.askCommission(c)
 		return
@@ -611,7 +757,18 @@ func (a *App) showConfirm(c *Ctx) {
 	if d.Get("editing_deal_id") != "" {
 		prefix = "✏️ <b>Переделка заявки</b> — измените поля и сгенерируйте заново\n\n"
 	}
-	c.Reply(prefix+dealSummary(d, client), confirmActKB())
+	extra := ""
+	if bid, ok := parseID(d.Get("cl_bank_id")); ok {
+		if b, _ := a.st.BankAccount(c, bid); b != nil {
+			extra += "\n<b>Реквизиты клиента:</b> " + escape(b.Title())
+		}
+	}
+	if bid, ok := parseID(d.Get("op_bank_id")); ok {
+		if b, _ := a.st.BankAccount(c, bid); b != nil {
+			extra += "\n<b>Наши реквизиты:</b> " + escape(b.Title())
+		}
+	}
+	c.Reply(prefix+dealSummary(d, client)+extra, confirmActKB())
 }
 
 // ─── Генерация ────────────────────────────────────────────────────────────────
@@ -642,13 +799,33 @@ func (a *App) generateAct(c *Ctx) {
 		return
 	}
 
+	// Выбранные в сделке реквизиты вместо основных
+	clientMap := client.Map()
+	opMap := map[string]string{}
+	for k, v := range op {
+		opMap[k] = v
+	}
+	var clBankID, opBankID sql.NullInt64
+	if id, ok := parseID(d.Get("cl_bank_id")); ok {
+		if b, _ := a.st.BankAccount(c, id); b != nil {
+			clientMap["bank_name"], clientMap["bank_account"], clientMap["bank_bik"] = b.BankName, b.Account, b.BIK
+			clBankID = sql.NullInt64{Int64: id, Valid: true}
+		}
+	}
+	if id, ok := parseID(d.Get("op_bank_id")); ok {
+		if b, _ := a.st.BankAccount(c, id); b != nil {
+			opMap["bank_name"], opMap["bank_account"], opMap["bank_bik"] = b.BankName, b.Account, b.BIK
+			opBankID = sql.NullInt64{Int64: id, Valid: true}
+		}
+	}
+
 	status := c.SendPlain("⏳ Создаю DOCX...", nil)
 	setStatus := func(t string) {
 		if status != nil {
 			_, _ = a.b.EditMessageText(c, editPlain(c.chatID, status.ID, t))
 		}
 	}
-	docxPath, err := docgen.Generate(a.cfg.TemplatesDir, a.cfg.OutputDir, d, op, client.Map(), custom)
+	docxPath, err := docgen.Generate(a.cfg.TemplatesDir, a.cfg.OutputDir, d, opMap, clientMap, custom)
 	if err != nil {
 		if status != nil {
 			c.Delete(status.ID)
@@ -740,6 +917,8 @@ func (a *App) generateAct(c *Ctx) {
 		DocxName:       filepath.Base(docxPath),
 		PDFName:        pdfName,
 		CreatedBy:      c.userName,
+		ClientBankID:   clBankID,
+		OperatorBankID: opBankID,
 	}
 	// Снимок параметров прибыли на момент сделки: поздняя смена настроек
 	// или реферала клиента не переписывает историю

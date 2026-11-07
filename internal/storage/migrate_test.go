@@ -106,3 +106,43 @@ func TestMigrateFreshDB(t *testing.T) {
 		t.Error("поле вне белого списка должно отклоняться")
 	}
 }
+
+func TestMigrateAccountsBackfill(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "hodler.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.DB().Exec(legacySchema + `
+		UPDATE companies SET bank_name='Банк А', bank_account='40702810', bank_bik='044', wallet='TXFEYN4C5BnesaxUXJiXJHGS7K12QutZ3r';
+		INSERT INTO companies (full_name, short_name, wallet) VALUES ('ООО Б', 'Б', '-');`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Migrate(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	banks, _ := st.BankAccounts(ctx, OwnerCompany, 1)
+	ws, _ := st.Wallets(ctx, OwnerCompany, 1)
+	if len(banks) != 1 || !banks[0].IsDefault || banks[0].Account != "40702810" {
+		t.Fatalf("реквизиты клиента: %+v", banks)
+	}
+	if len(ws) != 1 || ws[0].Network != "TRC-20" {
+		t.Fatalf("кошелёк клиента: %+v", ws)
+	}
+	if ws2, _ := st.Wallets(ctx, OwnerCompany, 2); len(ws2) != 0 {
+		t.Fatal("кошелёк «-» не должен переноситься")
+	}
+	op, _ := st.Wallets(ctx, OwnerOperator, 0)
+	if len(op) != 1 || !op[0].WatchIn || op[0].WatchSince == 0 {
+		t.Fatalf("кошелёк оператора должен отслеживаться: %+v", op)
+	}
+	// Смена основного копируется в старые поля компании
+	id, _ := st.AddBankAccount(ctx, &BankAccount{OwnerType: OwnerCompany, OwnerID: 1, Label: "Второй", Account: "999"})
+	if err := st.SetDefaultBank(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := st.Company(ctx, 1); c.BankAccount != "999" {
+		t.Fatalf("старые поля не синхронизированы: %q", c.BankAccount)
+	}
+}

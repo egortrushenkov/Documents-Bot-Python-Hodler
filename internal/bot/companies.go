@@ -83,7 +83,14 @@ func (a *App) sendCompanyCard(c *Ctx, co *storage.Company, prefix string) {
 			return
 		}
 	}
-	c.Reply(prefix+companyCardText(co, custom, defs)+"\n"+a.companyReferralLine(c, co), companyCardKB(co.ID))
+	banks, _ := a.st.BankAccounts(c, storage.OwnerCompany, co.ID)
+	wallets, _ := a.st.Wallets(c, storage.OwnerCompany, co.ID)
+	extra := ""
+	if len(banks) > 1 || len(wallets) > 1 {
+		extra = fmt.Sprintf("\n<i>Реквизитов: %d, кошельков: %d — в карточке показаны основные (⭐)</i>", len(banks), len(wallets))
+	}
+	c.Reply(prefix+companyCardText(co, custom, defs)+"\n"+a.companyReferralLine(c, co)+extra,
+		companyCardKB(co.ID, len(banks), len(wallets)))
 }
 
 func (a *App) showCompanies(c *Ctx) {
@@ -131,6 +138,7 @@ func (a *App) companyCallback(c *Ctx, head, rest string) {
 			c.fail(err)
 			return
 		}
+		_ = a.st.DeleteCompanyAccounts(c, id)
 		c.Answer("✅ Компания удалена", true)
 		a.showCompanies(c)
 
@@ -337,6 +345,9 @@ func (a *App) nextCustomOrSave(c *Ctx) {
 	if err != nil {
 		c.fail(err)
 		return
+	}
+	if co, _ := a.st.Company(c, id); co != nil { // реквизиты и кошелёк — первыми записями списков
+		_ = a.st.SyncCompanyLegacy(c, co)
 	}
 	for k, v := range c.s.CustomValues {
 		if err := a.st.SetCompanyCustom(c, id, k, v); err != nil {

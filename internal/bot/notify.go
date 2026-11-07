@@ -362,6 +362,14 @@ func (a *App) notifyCallback(c *Ctx, rest string) {
 		_ = a.st.RemoveNotifyChat(c, chatID)
 		c.Answer("Чат отключён", false)
 	}
+	if key, ok := map[string]string{"wadm": "wallet_notify_admins", "wgrp": "wallet_notify_groups"}[rest]; ok {
+		s, _ := a.st.Settings(c)
+		v := "1"
+		if s[key] == "1" || (key == "wallet_notify_admins" && s[key] != "0") {
+			v = "0"
+		}
+		_ = a.st.SetSetting(c, key, v)
+	}
 	chats, err := a.st.NotifyChats(c)
 	if err != nil {
 		c.fail(err)
@@ -391,6 +399,31 @@ func (a *App) notifyCallback(c *Ctx, rest string) {
 			rows = append(rows, row(btn("🔕 "+title, fmt.Sprintf("notify:del:%d", ch.ChatID))))
 		}
 	}
+	// Поступления на кошельки
+	s, _ := a.st.Settings(c)
+	toAdmins, toGroups := s["wallet_notify_admins"] != "0", s["wallet_notify_groups"] == "1"
+	wallets, _ := a.st.Wallets(c, storage.OwnerOperator, 0)
+	lines = append(lines, "", "💰 <b>Поступления на наши кошельки</b>")
+	if a.cfg.WalletPollSeconds <= 0 {
+		lines = append(lines, "⚠️ Проверка выключена (WALLET_POLL_SECONDS=0)")
+	} else {
+		lines = append(lines, fmt.Sprintf("Проверка каждые %d с. TRC-20 — без ключа; ERC-20/BEP-20 — %s.",
+			a.cfg.WalletPollSeconds, map[bool]string{true: "ключ Etherscan задан ✅", false: "нужен ETHERSCAN_API_KEY в .env"}[a.cfg.EtherscanKey != ""]))
+	}
+	watched := 0
+	for _, w := range wallets {
+		if w.WatchIn || w.WatchOut {
+			watched++
+			lines = append(lines, fmt.Sprintf("🔔 %s — поступления %s, списания %s, от %s USDT", escape(w.Title()),
+				onOff(w.WatchIn), onOff(w.WatchOut), util.RU(w.MinAmount, 2)))
+		}
+	}
+	if watched == 0 {
+		lines = append(lines, "<i>Ни один кошелёк не отслеживается — включите в «₿ Наши кошельки».</i>")
+	}
+	rows = append(rows,
+		row(btn("💰 Мне в личку: "+onOff(toAdmins), "notify:wadm"), btn("💰 В чат руководителей: "+onOff(toGroups), "notify:wgrp")),
+		row(btn("₿ Наши кошельки и настройки", "wal:list:op")))
 	rows = append(rows, row(btn("🏠 Главное меню", "menu:main")))
 	c.Edit(strings.Join(lines, "\n"), ikb(rows...))
 }

@@ -481,6 +481,12 @@ func (a *App) startDealEdit(c *Ctx, d *storage.Deal) {
 		"commission_fiat": d.CommissionFiat, "commission_va": d.CommissionVA,
 		"editing_deal_id": fmt.Sprint(d.ID),
 	}
+	if d.ClientBankID.Valid {
+		fields["cl_bank_id"] = fmt.Sprint(d.ClientBankID.Int64)
+	}
+	if d.OperatorBankID.Valid {
+		fields["op_bank_id"] = fmt.Sprint(d.OperatorBankID.Int64)
+	}
 	if len(txs) == 1 {
 		fields["tx_hash"] = txs[0].TxHash
 		txs[0].VAAmount = fields["va_amount"]

@@ -95,8 +95,10 @@ func companiesListKB(cs []*storage.Company, selectMode bool) *models.InlineKeybo
 	return ikb(rows...)
 }
 
-func companyCardKB(id int64) *models.InlineKeyboardMarkup {
+func companyCardKB(id int64, banks, wallets int) *models.InlineKeyboardMarkup {
 	return ikb(
+		row(btn(fmt.Sprintf("🏦 Реквизиты (%d)", banks), fmt.Sprintf("acc:list:c%d", id)),
+			btn(fmt.Sprintf("₿ Кошельки (%d)", wallets), fmt.Sprintf("wal:list:c%d", id))),
 		row(btn("✏️ Редактировать", fmt.Sprintf("edit_company:%d", id)),
 			btn("🗑 Удалить", fmt.Sprintf("del_company:%d", id))),
 		row(btn("◀️ Назад к списку", "menu:companies")),
@@ -113,10 +115,6 @@ var companyEditFields = [][2]string{
 	{"kio", "КИО"},
 	{"inn_rf", "ИНН в РФ"},
 	{"kpp_rf", "КПП в РФ"},
-	{"bank_name", "Банк"},
-	{"bank_account", "Р/счёт"},
-	{"bank_bik", "БИК"},
-	{"wallet", "Кошелёк (крипто)"},
 	{"resident", "Резидент/Нерезидент КР"},
 	{"referrer", "👥 Реферал"},
 	{"referral_percent", "👥 % реферала для клиента"},
@@ -258,6 +256,8 @@ var actEditFields = [][2]string{
 	{"commission_fiat", "Комиссия в RUB"},
 	{"commission_va", "Комиссия в ВА"},
 	{"execution_date", "Дата исполнения"},
+	{"client_bank", "Реквизиты клиента"},
+	{"op_bank", "Наши реквизиты"},
 }
 
 func editActFieldsKB() *models.InlineKeyboardMarkup {
@@ -290,10 +290,6 @@ var settingsFields = [][2]string{
 	{"kio", "КИО"},
 	{"inn_rf", "ИНН в РФ"},
 	{"kpp_rf", "КПП в РФ"},
-	{"bank_name", "Банк"},
-	{"bank_account", "Р/счёт"},
-	{"bank_bik", "БИК"},
-	{"wallet", "Кошелёк оператора"},
 	{"director_name", "ФИО директора"},
 	{"director_title", "Должность директора"},
 	{"tax_percent", "📈 Налог, % от ЧКД"},
@@ -302,7 +298,7 @@ var settingsFields = [][2]string{
 }
 
 func settingsKB() *models.InlineKeyboardMarkup {
-	var rows []kbRow
+	rows := []kbRow{row(btn("🏦 Наши счета", "acc:list:op"), btn("₿ Наши кошельки", "wal:list:op"))}
 	for _, f := range settingsFields {
 		rows = append(rows, row(btn("✏️ "+f[1], "setting:"+f[0])))
 	}

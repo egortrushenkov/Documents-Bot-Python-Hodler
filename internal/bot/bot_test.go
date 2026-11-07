@@ -197,7 +197,7 @@ func TestFullFlow(t *testing.T) {
 	h.expect(h.text("500 000"), "79,52")
 	h.expect(h.click("skip:exchange_rate"), "КВВО")
 	h.expect(h.text("12345"), "Кошелёк клиента") // свой КВВО сохраняется
-	h.expect(h.click("skip:client_wallet"), "Кошелёк оператора")
+	h.expect(h.click("skip:client_wallet"), "Наш кошелёк")
 	h.expect(h.click("skip:operator_wallet"), "Транзакции")
 	h.expect(h.click("tx:split"), "Остаток: 6287.73")
 	h.click("tx:add")

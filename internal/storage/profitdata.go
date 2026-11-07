@@ -326,12 +326,31 @@ func (s *Store) SetBuybackStatus(ctx context.Context, id int64, status string) e
 // ─── Чаты руководителей и уведомления ─────────────────────────────────────────
 
 type NotifyChat struct {
-	ChatID int64
-	Title  string
+	ChatID           int64
+	Title            string
+	ThreadID         int // сделки и откупки
+	WalletsThreadID  int // поступления на кошельки (0 — как ThreadID)
+	TreasuryThreadID int // выводы, выплаты рефералам (0 — как ThreadID)
+}
+
+// Thread — ветка для вида уведомлений: deal | wallet | treasury.
+func (c NotifyChat) Thread(kind string) int {
+	switch kind {
+	case "wallet":
+		if c.WalletsThreadID != 0 {
+			return c.WalletsThreadID
+		}
+	case "treasury":
+		if c.TreasuryThreadID != 0 {
+			return c.TreasuryThreadID
+		}
+	}
+	return c.ThreadID
 }
 
 func (s *Store) NotifyChats(ctx context.Context) ([]NotifyChat, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT chat_id, title FROM notify_chats ORDER BY added_at")
+	rows, err := s.db.QueryContext(ctx, `SELECT chat_id, title, COALESCE(thread_id,0), COALESCE(wallets_thread_id,0),
+		COALESCE(treasury_thread_id,0) FROM notify_chats ORDER BY added_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +359,7 @@ func (s *Store) NotifyChats(ctx context.Context) ([]NotifyChat, error) {
 	for rows.Next() {
 		var c NotifyChat
 		var t Str
-		if err := rows.Scan(&c.ChatID, &t); err != nil {
+		if err := rows.Scan(&c.ChatID, &t, &c.ThreadID, &c.WalletsThreadID, &c.TreasuryThreadID); err != nil {
 			return nil, err
 		}
 		c.Title = string(t)
@@ -349,16 +368,44 @@ func (s *Store) NotifyChats(ctx context.Context) ([]NotifyChat, error) {
 	return out, rows.Err()
 }
 
+// NotifyChat — настройки чата или nil.
+func (s *Store) NotifyChat(ctx context.Context, chatID int64) (*NotifyChat, error) {
+	chats, err := s.NotifyChats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range chats {
+		if c.ChatID == chatID {
+			return &c, nil
+		}
+	}
+	return nil, nil
+}
+
 func (s *Store) IsNotifyChat(ctx context.Context, chatID int64) (bool, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM notify_chats WHERE chat_id=?", chatID).Scan(&n)
 	return n > 0, err
 }
 
-func (s *Store) AddNotifyChat(ctx context.Context, chatID int64, title, by string) error {
-	_, err := s.db.ExecContext(ctx,
-		"INSERT OR REPLACE INTO notify_chats (chat_id, title, added_by) VALUES (?,?,?)", chatID, title, by)
+// BindNotifyChat подключает чат; kind = deal | wallet | treasury — какой вид
+// уведомлений слать в ветку thread. Остальные настройки ветвей сохраняются.
+func (s *Store) BindNotifyChat(ctx context.Context, chatID int64, title, by, kind string, thread int) error {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO notify_chats (chat_id, title, added_by, thread_id) VALUES (?,?,?,?)
+		ON CONFLICT(chat_id) DO UPDATE SET title=excluded.title`, chatID, title, by, thread); err != nil {
+		return err
+	}
+	col := map[string]string{"deal": "thread_id", "wallet": "wallets_thread_id", "treasury": "treasury_thread_id"}[kind]
+	if col == "" {
+		col = "thread_id"
+	}
+	_, err := s.db.ExecContext(ctx, "UPDATE notify_chats SET "+col+"=? WHERE chat_id=?", thread, chatID)
 	return err
+}
+
+// AddNotifyChat — подключить чат без веток (совместимость).
+func (s *Store) AddNotifyChat(ctx context.Context, chatID int64, title, by string) error {
+	return s.BindNotifyChat(ctx, chatID, title, by, "deal", 0)
 }
 
 func (s *Store) RemoveNotifyChat(ctx context.Context, chatID int64) error {
@@ -369,18 +416,19 @@ func (s *Store) RemoveNotifyChat(ctx context.Context, chatID int64) error {
 type Notification struct {
 	ChatID    int64
 	MessageID int
+	ThreadID  int
 }
 
-func (s *Store) SaveNotification(ctx context.Context, entity string, id, chatID int64, msgID int) error {
+func (s *Store) SaveNotification(ctx context.Context, entity string, id, chatID int64, msgID, thread int) error {
 	_, err := s.db.ExecContext(ctx,
-		"INSERT OR REPLACE INTO notifications (entity, entity_id, chat_id, message_id) VALUES (?,?,?,?)",
-		entity, id, chatID, msgID)
+		"INSERT OR REPLACE INTO notifications (entity, entity_id, chat_id, message_id, thread_id) VALUES (?,?,?,?,?)",
+		entity, id, chatID, msgID, thread)
 	return err
 }
 
 func (s *Store) Notifications(ctx context.Context, entity string, id int64) ([]Notification, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT chat_id, message_id FROM notifications WHERE entity=? AND entity_id=?", entity, id)
+		"SELECT chat_id, message_id, COALESCE(thread_id,0) FROM notifications WHERE entity=? AND entity_id=?", entity, id)
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +436,7 @@ func (s *Store) Notifications(ctx context.Context, entity string, id int64) ([]N
 	var out []Notification
 	for rows.Next() {
 		var n Notification
-		if err := rows.Scan(&n.ChatID, &n.MessageID); err != nil {
+		if err := rows.Scan(&n.ChatID, &n.MessageID, &n.ThreadID); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

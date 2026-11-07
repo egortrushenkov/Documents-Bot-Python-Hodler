@@ -28,6 +28,7 @@ type fakeTG struct {
 }
 
 type call struct {
+	Thread string // message_thread_id
 	ChatID string
 	Reply  string // reply_parameters
 	Method string
@@ -44,7 +45,7 @@ func (f *fakeTG) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseMultipartForm(64 << 20)
 	method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 	c := call{Method: method, Text: r.FormValue("text") + r.FormValue("caption"), Markup: r.FormValue("reply_markup"),
-		ChatID: r.FormValue("chat_id"), Reply: r.FormValue("reply_parameters")}
+		ChatID: r.FormValue("chat_id"), Reply: r.FormValue("reply_parameters"), Thread: r.FormValue("message_thread_id")}
 	if r.MultipartForm != nil {
 		for _, fhs := range r.MultipartForm.File {
 			c.File = fhs[0].Filename

@@ -115,6 +115,7 @@ type Ctx struct {
 	answered bool
 	userName string // для «кто создал сделку»
 	chatType models.ChatType
+	thread   int // ветка (тема) чата, откуда пришло сообщение
 }
 
 func (a *App) handle(ctx context.Context, _ *tg.Bot, upd *models.Update) {
@@ -124,6 +125,9 @@ func (a *App) handle(ctx context.Context, _ *tg.Bot, upd *models.Update) {
 	case upd.Message != nil && upd.Message.From != nil:
 		chatID, userID = upd.Message.Chat.ID, upd.Message.From.ID
 		c = &Ctx{msg: upd.Message, chatType: upd.Message.Chat.Type, userName: displayName(upd.Message.From)}
+		if upd.Message.IsTopicMessage {
+			c.thread = upd.Message.MessageThreadID
+		}
 	case upd.CallbackQuery != nil:
 		userID = upd.CallbackQuery.From.ID
 		if m := upd.CallbackQuery.Message.Message; m != nil {
@@ -204,7 +208,7 @@ func markup(kb models.ReplyMarkup) models.ReplyMarkup {
 }
 
 func (c *Ctx) send(text string, kb models.ReplyMarkup, html bool) *models.Message {
-	p := &tg.SendMessageParams{ChatID: c.chatID, Text: text, ReplyMarkup: markup(kb)}
+	p := &tg.SendMessageParams{ChatID: c.chatID, Text: text, ReplyMarkup: markup(kb), MessageThreadID: c.thread}
 	if html {
 		p.ParseMode = models.ParseModeHTML
 	}

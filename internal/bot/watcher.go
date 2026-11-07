@@ -8,9 +8,6 @@ import (
 	"strings"
 	"time"
 
-	tg "github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
-
 	"hodler-doc-bot/internal/chain"
 	"hodler-doc-bot/internal/storage"
 	"hodler-doc-bot/internal/util"
@@ -109,22 +106,25 @@ func (a *App) notifyWalletTx(ctx context.Context, w *storage.Wallet, t chain.Tra
 	}
 	text := walletTxText(w, t, in, a.counterpartyName(ctx, other))
 	s, _ := a.st.Settings(ctx)
-	var targets []int64
+	type target struct {
+		chat   int64
+		thread int
+	}
+	var targets []target
 	if s["wallet_notify_admins"] != "0" {
 		for id := range a.cfg.AdminIDs {
-			targets = append(targets, id)
+			targets = append(targets, target{id, 0})
 		}
 	}
 	if s["wallet_notify_groups"] == "1" {
 		chats, _ := a.st.NotifyChats(ctx)
 		for _, ch := range chats {
-			targets = append(targets, ch.ChatID)
+			targets = append(targets, target{ch.ChatID, ch.Thread("wallet")})
 		}
 	}
-	for _, chatID := range targets {
-		if _, err := a.b.SendMessage(ctx, &tg.SendMessageParams{ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML,
-			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: tg.True()}}); err != nil {
-			slog.Warn("уведомление о транзакции не отправлено", "chat", chatID, "err", err)
+	for _, t := range targets {
+		if _, err := a.sendNotify(ctx, t.chat, t.thread, text, 0); err != nil {
+			slog.Warn("уведомление о транзакции не отправлено", "chat", t.chat, "thread", t.thread, "err", err)
 		}
 	}
 }

@@ -185,15 +185,24 @@ func (a *App) bgCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
-func (a *App) sendNotify(ctx context.Context, chatID int64, text string, replyTo int) (*models.Message, error) {
-	p := &tg.SendMessageParams{ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML}
+func (a *App) sendNotify(ctx context.Context, chatID int64, thread int, text string, replyTo int) (*models.Message, error) {
+	p := &tg.SendMessageParams{ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML, MessageThreadID: thread,
+		LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: tg.True()}}
 	if replyTo != 0 {
 		p.ReplyParameters = &models.ReplyParameters{MessageID: replyTo, AllowSendingWithoutReply: true}
 	}
 	return a.b.SendMessage(ctx, p)
 }
 
-// notifyNew — новое уведомление во все чаты руководителей.
+// notifyKind — вид уведомления для выбора ветки: сделки/откупки или финансы.
+func notifyKind(entity string) string {
+	if entity == "treasury" {
+		return "treasury"
+	}
+	return "deal"
+}
+
+// notifyNew — новое уведомление во все чаты руководителей (в нужную ветку).
 func (a *App) notifyNew(entity string, id int64, text string) {
 	ctx, cancel := a.bgCtx()
 	defer cancel()
@@ -203,12 +212,13 @@ func (a *App) notifyNew(entity string, id int64, text string) {
 		return
 	}
 	for _, ch := range chats {
-		m, err := a.sendNotify(ctx, ch.ChatID, text, 0)
+		thread := ch.Thread(notifyKind(entity))
+		m, err := a.sendNotify(ctx, ch.ChatID, thread, text, 0)
 		if err != nil {
-			slog.Error("уведомление не отправлено", "chat", ch.ChatID, "err", err)
+			slog.Error("уведомление не отправлено", "chat", ch.ChatID, "thread", thread, "err", err)
 			continue
 		}
-		_ = a.st.SaveNotification(ctx, entity, id, ch.ChatID, m.ID)
+		_ = a.st.SaveNotification(ctx, entity, id, ch.ChatID, m.ID, thread)
 	}
 }
 
@@ -232,7 +242,7 @@ func (a *App) notifyChange(entity string, id int64, text, reply string) {
 			slog.Warn("не удалось обновить уведомление", "chat", n.ChatID, "err", err)
 		}
 		if reply != "" {
-			if _, err := a.sendNotify(ctx, n.ChatID, reply, n.MessageID); err != nil {
+			if _, err := a.sendNotify(ctx, n.ChatID, n.ThreadID, reply, n.MessageID); err != nil {
 				slog.Error("ответ на уведомление не отправлен", "chat", n.ChatID, "err", err)
 			}
 		}
@@ -243,8 +253,9 @@ func (a *App) notifyChange(entity string, id int64, text, reply string) {
 		if done[ch.ChatID] || reply == "" {
 			continue
 		}
-		if m, err := a.sendNotify(ctx, ch.ChatID, text+"\n\n"+reply, 0); err == nil {
-			_ = a.st.SaveNotification(ctx, entity, id, ch.ChatID, m.ID)
+		thread := ch.Thread(notifyKind(entity))
+		if m, err := a.sendNotify(ctx, ch.ChatID, thread, text+"\n\n"+reply, 0); err == nil {
+			_ = a.st.SaveNotification(ctx, entity, id, ch.ChatID, m.ID, thread)
 		}
 	}
 }
@@ -285,19 +296,61 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 		if !isAdmin {
 			return
 		}
-		title := ""
-		if c.msg.Chat.Title != "" {
-			title = c.msg.Chat.Title
+		kind, kindName := "deal", "сделки, откупки, правки и отмены"
+		if len(fields) > 1 {
+			switch strings.ToLower(strings.Trim(fields[1], "«»\"")) {
+			case "кошельки", "кошелёк", "кошелек", "поступления", "wallets", "wallet":
+				kind, kindName = "wallet", "поступления и списания по кошелькам"
+			case "финансы", "выплаты", "остатки", "treasury", "finance":
+				kind, kindName = "treasury", "выводы прибыли, выплаты рефералам, ручные операции"
+			case "сделки", "deals":
+			default:
+				c.SendPlain("Варианты: /bind, /bind кошельки, /bind финансы", nil)
+				return
+			}
 		}
-		if err := a.st.AddNotifyChat(c, c.chatID, title, c.userName); err != nil {
+		if err := a.st.BindNotifyChat(c, c.chatID, c.msg.Chat.Title, c.userName, kind, c.thread); err != nil {
 			c.fail(err)
 			return
 		}
-		c.Send("✅ Чат подключён к уведомлениям о сделках.\n\n"+
+		where := "в этот чат"
+		if c.thread != 0 {
+			where = "в эту ветку"
+		}
+		if kind != "deal" {
+			c.Send("✅ Теперь "+where+" будут приходить: "+kindName+".\n\nВсе настройки чата: /status", nil)
+			return
+		}
+		c.Send("✅ Подключено: "+kindName+" — "+where+".\n\n"+
+			"Отдельные ветки для других уведомлений: напишите в нужной ветке\n"+
+			"/bind кошельки — поступления на кошельки\n/bind финансы — выводы, выплаты рефералам\n\n"+
 			"Сюда будут приходить новые сделки, откупки, правки и отмены.\n"+
 			"Отчёт за день: /today, за дату: /report 03.11.2026\n"+
 			"Остатки USDT и ₽: /balance\nДолги рефералам: /ref\nПоставщики и клиенты за месяц: /stats (или /stats сегодня, /stats прошлый)\n"+
 			"Отключить: /unbind", nil)
+	case "/status":
+		if !bound && !isAdmin {
+			return
+		}
+		ch, _ := a.st.NotifyChat(c, c.chatID)
+		if ch == nil {
+			c.SendPlain("Чат не подключён. Напишите /bind в ветке, куда слать уведомления.", nil)
+			return
+		}
+		name := func(t int) string {
+			if t == 0 {
+				return "общая ветка / чат"
+			}
+			return fmt.Sprintf("ветка №%d", t)
+		}
+		s, _ := a.st.Settings(c)
+		walletLine := "выключены (🔔 Уведомления в боте → «В чат руководителей»)"
+		if s["wallet_notify_groups"] == "1" {
+			walletLine = name(ch.Thread("wallet"))
+		}
+		c.Send(fmt.Sprintf("🔔 <b>Уведомления этого чата</b>\nСделки и откупки: %s\nКошельки: %s\nФинансы: %s\n\n"+
+			"Сменить: напишите в нужной ветке /bind, /bind кошельки или /bind финансы.",
+			name(ch.Thread("deal")), walletLine, name(ch.Thread("treasury"))), nil)
 	case "/unbind":
 		if !isAdmin {
 			return
@@ -380,6 +433,8 @@ func (a *App) notifyCallback(c *Ctx, rest string) {
 		"Как подключить чат:",
 		"1. Добавьте бота в группу с руководителями.",
 		"2. Напишите в группе <code>/bind</code> (с аккаунта из ADMIN_IDS).",
+		"Чат с ветками: напишите <code>/bind</code> прямо в нужной ветке. Разные уведомления — в разные ветки: " +
+			"<code>/bind кошельки</code> и <code>/bind финансы</code> в своих ветках. Проверить: <code>/status</code>.",
 		"",
 		"В чат приходят: 🆕 новые сделки, 🔁 откупки, ✏️ правки (ответом «было → стало»), ❌ отмены. " +
 			"Исходное сообщение тоже обновляется, чтобы показывать актуальное состояние.",

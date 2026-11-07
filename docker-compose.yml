@@ -10,6 +10,8 @@ services:
     restart: unless-stopped
     init: true                    # tini как PID 1: собирает «осиротевшие» процессы LibreOffice
     env_file: .env
+    environment:
+      - TZ=${TZ:-Europe/Moscow}   # «сегодня» в датах сделок и отчётах; своё значение — TZ в .env
     volumes:
       - ./data:/app/data          # БД (та же hodler.db, что у Python-версии) и сгенерированные файлы
       - ./templates:/app/templates # Шаблоны DOCX

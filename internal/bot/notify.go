@@ -295,13 +295,33 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 		}
 		c.Send("✅ Чат подключён к уведомлениям о сделках.\n\n"+
 			"Сюда будут приходить новые сделки, откупки, правки и отмены.\n"+
-			"Отчёт за день: /today, за дату: /report 03.11.2026\nОтключить: /unbind", nil)
+			"Отчёт за день: /today, за дату: /report 03.11.2026\n"+
+			"Остатки USDT и ₽: /balance\nПоставщики и клиенты за месяц: /stats (или /stats сегодня, /stats прошлый)\n"+
+			"Отключить: /unbind", nil)
 	case "/unbind":
 		if !isAdmin {
 			return
 		}
 		_ = a.st.RemoveNotifyChat(c, c.chatID)
 		c.Send("🔕 Уведомления в этот чат отключены.", nil)
+	case "/balance", "/stats":
+		if !bound && !isAdmin {
+			return
+		}
+		if cmd == "/stats" {
+			code := "month"
+			if len(fields) > 1 {
+				code = map[string]string{"сегодня": "today", "today": "today", "прошлый": "prev", "prev": "prev", "всё": "all", "все": "all", "all": "all"}[strings.ToLower(fields[1])]
+			}
+			a.sendStats(c, code)
+			return
+		}
+		t, err := a.treasury(c)
+		if err != nil {
+			c.fail(err)
+			return
+		}
+		c.Send(treasuryText(t), nil)
 	case "/today", "/report":
 		if !bound && !isAdmin {
 			return
@@ -340,7 +360,7 @@ func (a *App) notifyCallback(c *Ctx, rest string) {
 		"",
 		"В чат приходят: 🆕 новые сделки, 🔁 откупки, ✏️ правки (ответом «было → стало»), ❌ отмены. " +
 			"Исходное сообщение тоже обновляется, чтобы показывать актуальное состояние.",
-		"В группе доступны <code>/today</code> и <code>/report ДД.ММ.ГГГГ</code> — отчёт о прибыли.",
+		"В группе: <code>/today</code>, <code>/report ДД.ММ.ГГГГ</code> — прибыль за день; <code>/balance</code> — остатки; <code>/stats</code> — поставщики и клиенты.",
 		"",
 	}
 	var rows []kbRow

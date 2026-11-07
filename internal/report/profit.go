@@ -192,6 +192,40 @@ func BuildProfitReport(path, month string, deals []*storage.Deal, buybacks []*st
 	}
 	table(f, st, "Откупки", "Откупки за "+label, bCols, bRows, nil)
 
+	// ─── У кого сколько купили / кому продали ───
+	sups, clients := profit.Stats(deals, buybacks)
+	if _, err := f.NewSheet("Поставщики"); err != nil {
+		return err
+	}
+	var sRows [][]any
+	var sr, su float64
+	for _, s := range sups {
+		sRows = append(sRows, []any{s.Name, s.Count, s.Rub, util.Round2(s.USDT), util.Round2(s.AvgRate())})
+		sr += s.Rub
+		su += s.USDT
+	}
+	table(f, st, "Поставщики", "У кого откупали за "+label, []column{
+		{"Поставщик", 32, "text"}, {"Откупок", 9, "int"}, {"Переведено ₽", 16, "money"},
+		{"Куплено USDT", 14, "money"}, {"Средний курс", 12, "rate"},
+	}, sRows, []any{"Итого", "", sr, util.Round2(su)})
+
+	if _, err := f.NewSheet("Клиенты"); err != nil {
+		return err
+	}
+	var cRows [][]any
+	var cr, cv, cc, cn float64
+	for _, c := range clients {
+		cRows = append(cRows, []any{c.Name, c.Count, c.Rub, util.Round2(c.Volume), util.Round2(c.CKD), util.Round2(c.Net), c.Pending})
+		cr += c.Rub
+		cv += c.Volume
+		cc += c.CKD
+		cn += c.Net
+	}
+	table(f, st, "Клиенты", "Кому продавали за "+label, []column{
+		{"Клиент", 32, "text"}, {"Сделок", 8, "int"}, {"Сумма ₽", 16, "money"}, {"Объём USDT", 14, "money"},
+		{"ЧКД USDT", 12, "money"}, {"Чистая USDT", 12, "money"}, {"Без откупки", 10, "int"},
+	}, cRows, []any{"Итого", "", cr, util.Round2(cv), util.Round2(cc), util.Round2(cn)})
+
 	f.SetActiveSheet(0)
 	return f.SaveAs(path)
 }

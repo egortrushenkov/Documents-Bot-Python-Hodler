@@ -45,6 +45,7 @@ const (
 	navMenu      = "🏠 Меню"
 	navBuybacks  = "🔁 Откупки"
 	navProfit    = "📈 Прибыль"
+	navTreasury  = "💰 Остатки"
 )
 
 func navKB() *models.ReplyKeyboardMarkup {
@@ -52,7 +53,7 @@ func navKB() *models.ReplyKeyboardMarkup {
 	return &models.ReplyKeyboardMarkup{
 		Keyboard: [][]models.KeyboardButton{
 			{k(navCreateAct), k(navDeals)},
-			{k(navBuybacks), k(navProfit)},
+			{k(navBuybacks), k(navProfit), k(navTreasury)},
 			{k(navReport), k(navCompanies)},
 			{k(navSettings), k(navMenu)},
 		},
@@ -67,7 +68,8 @@ func mainMenuKB() *models.InlineKeyboardMarkup {
 	return ikb(
 		row(btn("📋 Создать акт", "menu:create_act"), btn("🏢 Компании", "menu:companies")),
 		row(btn("🗂 Сделки", "deals:menu"), btn("🔁 Откупки", "bb:menu")),
-		row(btn("📈 Прибыль", "profit:menu"), btn("📊 Отчёт ФН", "report:menu")),
+		row(btn("📈 Прибыль", "profit:menu"), btn("💰 Остатки", "tr:menu")),
+		row(btn("📊 Отчёт ФН", "report:menu")),
 		row(btn("👥 Рефералы", "ref:menu"), btn("🔔 Уведомления", "notify:menu")),
 		row(btn("📄 Шаблоны", "tpl:menu"), btn("⚙️ Реквизиты", "menu:settings")),
 	)

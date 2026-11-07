@@ -15,10 +15,11 @@ const stProfitDate = "profit:date"
 func (a *App) showProfitMenu(c *Ctx) {
 	c.Reply("📈 <b>Прибыль</b>\n\nОтчёт для руководства за день — в формате «📊 Классика за ДД.ММ.ГГГГ»: "+
 		"курс откупки / курс клиента, объём, ЧКД, налог, рефералы, чистая прибыль.\n\n"+
-		"XLSX за месяц — три листа: все транзакции, прибыль по сделкам, откупки.", ikb(
+		"XLSX за месяц: все транзакции, прибыль по сделкам, откупки, поставщики, клиенты.", ikb(
 		row(btn("📊 Сегодня", "profit:today"), btn("📊 Вчера", "profit:yesterday")),
 		row(btn("📅 Другая дата", "profit:date")),
 		row(btn("📥 XLSX за месяц", "profit:months")),
+		row(btn("💰 Остатки", "tr:menu"), btn("📦 Поставщики и клиенты", "tr:stats")),
 		row(btn("🏠 Главное меню", "menu:main")),
 	))
 }
@@ -117,7 +118,7 @@ func (a *App) sendProfitXLSX(c *Ctx, month string) {
 		return
 	}
 	name := fmt.Sprintf("Прибыль_%s.xlsx", month)
-	if _, err := c.SendFile(path, name, "📥 Транзакции, прибыль и откупки за "+report.MonthLabel(month), false); err != nil {
+	if _, err := c.SendFile(path, name, "📥 Транзакции, прибыль, откупки, поставщики и клиенты за "+report.MonthLabel(month), false); err != nil {
 		c.fail(err)
 	}
 }

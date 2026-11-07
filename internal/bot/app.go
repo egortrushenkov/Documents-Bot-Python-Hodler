@@ -389,6 +389,10 @@ func (a *App) onMessage(c *Ctx) {
 		c.s.Clear()
 		a.showProfitMenu(c)
 		return
+	case navTreasury:
+		c.s.Clear()
+		a.showTreasury(c, "")
+		return
 	}
 
 	state := c.s.State
@@ -418,6 +422,8 @@ func (a *App) onMessage(c *Ctx) {
 		a.varsLabelInput(c, text)
 	case strings.HasPrefix(state, "bb:"):
 		a.buybackMessage(c, text)
+	case strings.HasPrefix(state, "tr:"):
+		a.treasuryMessage(c, text)
 	case strings.HasPrefix(state, "ref:"):
 		a.referrerMessage(c, text)
 	case state == stProfitDate:
@@ -464,6 +470,8 @@ func (a *App) onCallback(c *Ctx) {
 		a.referrerCallback(c, head, rest)
 	case "profit":
 		a.profitCallback(c, rest)
+	case "tr":
+		a.treasuryCallback(c, rest)
 	case "notify":
 		a.notifyCallback(c, rest)
 	case "dealx":

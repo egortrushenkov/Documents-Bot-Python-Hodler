@@ -190,3 +190,52 @@ func TestBuybackProfitNotifications(t *testing.T) {
 		t.Fatalf("нумерация должна сохраниться: %d", n)
 	}
 }
+
+func TestTreasuryFlow(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.group("/bind", 1)
+	h.addCompany("Клиент")
+
+	// Начальный остаток: 1000 USDT, 50 000 ₽ с сегодняшнего дня
+	h.click("tr:opening")
+	h.text("1000")
+	h.text("50000")
+	h.expect(h.click("tr:openday"), "USDT:</b> 1 000,00")
+
+	// Продажа без откупки → USDT уходит, рубли приходят, «выдано наперёд»
+	h.sellDeal("1", "700", "1000", "82000")
+	c := h.text(navTreasury)
+	h.expect(c, "<b>USDT:</b> 0,00")
+	h.expect(c, "₽ на счёте:</b> 132 000,00")
+	h.expect(c, "Выдано наперёд без откупки:</b> 1 сд.")
+
+	// Вывод прибыли: уменьшает USDT и приходит уведомлением в группу
+	h.click("tr:op")
+	h.click("tr:kind:withdraw")
+	h.click("tr:cur:usdt")
+	h.text("10")
+	h.expect(h.text("на карту"), "USDT:</b> -10,00 ⚠️")
+	if !h.tg.find("sendMessage", "Вывод прибыли") {
+		t.Fatal("нет уведомления о выводе")
+	}
+
+	// В группе: /balance и /stats
+	h.group("/balance", 555)
+	g := h.tg.callsTo("-100")
+	if !strings.Contains(g[len(g)-1].Text, "Остатки на") {
+		t.Fatalf("/balance: %q", g[len(g)-1].Text)
+	}
+	h.group("/stats сегодня", 555)
+	g = h.tg.callsTo("-100")
+	if l := g[len(g)-1].Text; !strings.Contains(l, "Кому продавали") || !strings.Contains(l, "1 без откупки") {
+		t.Fatalf("/stats: %q", l)
+	}
+
+	// Отмена сделки возвращает остатки
+	h.click("dealx:cancelyes:1")
+	tr, _ := h.app.treasury(&Ctx{Context: ctx, app: h.app})
+	if r := tr.Rub; r != 50000 || tr.USDT != 990 {
+		t.Fatalf("после отмены: %v ₽, %v USDT", r, tr.USDT)
+	}
+}

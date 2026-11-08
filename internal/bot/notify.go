@@ -306,8 +306,30 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 	slog.Info("команда в группе", "cmd", cmd, "chat", c.chatID, "thread", c.thread,
 		"msg_thread", c.msg.MessageThreadID, "is_topic", c.msg.IsTopicMessage, "is_forum", c.msg.Chat.IsForum, "admin", isAdmin)
 	switch cmd {
+	case "/start", "/menu", "/help", "/id":
+		lines := []string{
+			fmt.Sprintf("Ваш Telegram ID: <code>%d</code>", c.userID),
+			"",
+			"<b>В этом чате:</b>",
+			"/today — прибыль за сегодня, /report ДД.ММ.ГГГГ — за дату",
+			"/balance — остатки USDT и ₽",
+			"/ref — долги рефералам",
+			"/stats — поставщики и клиенты за месяц",
+			"/status — куда приходят уведомления",
+			"",
+			"Создание сделок, откупки и настройки — в личке с ботом, для сотрудников из ADMIN_IDS.",
+		}
+		if !bound {
+			lines = append(lines, "", "⚠️ Чат ещё не подключён — администратор бота должен написать здесь /bind.")
+		}
+		if isAdmin {
+			lines = append(lines, "", "Вы администратор: /bind, /bind кошельки, /bind финансы, /unbind.")
+		}
+		c.Send(strings.Join(lines, "\n"), nil)
 	case "/bind":
 		if !isAdmin {
+			c.Send(fmt.Sprintf("⛔ Подключать чат может только администратор бота.\nВаш ID: <code>%d</code> — "+
+				"его можно добавить в ADMIN_IDS.", c.userID), nil)
 			return
 		}
 		kind, kindName := "deal", "сделки, откупки, правки и отмены"
@@ -344,6 +366,7 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 			"Отключить: /unbind", nil)
 	case "/status":
 		if !bound && !isAdmin {
+			c.Send("⚠️ Чат не подключён к боту — администратор должен написать здесь /bind.", nil)
 			return
 		}
 		ch, _ := a.st.NotifyChat(c, c.chatID)
@@ -373,12 +396,14 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 			name(ch.Thread("deal")), walletLine, name(ch.Thread("treasury")))+diag, nil)
 	case "/unbind":
 		if !isAdmin {
+			c.Send("⛔ Отключать чат может только администратор бота.", nil)
 			return
 		}
 		_ = a.st.RemoveNotifyChat(c, c.chatID)
 		c.Send("🔕 Уведомления в этот чат отключены.", nil)
 	case "/ref":
 		if !bound && !isAdmin {
+			c.Send("⚠️ Чат не подключён к боту — администратор должен написать здесь /bind.", nil)
 			return
 		}
 		refs, _ := a.st.Referrers(c)
@@ -394,6 +419,7 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 		c.Send(strings.Join(lines, "\n"), nil)
 	case "/balance", "/stats":
 		if !bound && !isAdmin {
+			c.Send("⚠️ Чат не подключён к боту — администратор должен написать здесь /bind.", nil)
 			return
 		}
 		if cmd == "/stats" {
@@ -412,6 +438,7 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 		c.Send(treasuryText(t), nil)
 	case "/today", "/report":
 		if !bound && !isAdmin {
+			c.Send("⚠️ Чат не подключён к боту — администратор должен написать здесь /bind.", nil)
 			return
 		}
 		day := time.Now()

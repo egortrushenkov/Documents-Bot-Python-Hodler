@@ -153,8 +153,16 @@ func (a *App) handle(ctx context.Context, _ *tg.Bot, upd *models.Update) {
 		}
 		return
 	}
-	// Если задан ADMIN_IDS — бот отвечает только этим пользователям (остальных тихо игнорируем).
+	// Если задан ADMIN_IDS — бот отвечает только этим пользователям. Посторонним
+	// на /start — подсказка с их ID (чтобы администратор мог выдать доступ),
+	// остальное тихо игнорируем.
 	if len(a.cfg.AdminIDs) > 0 && !a.cfg.AdminIDs[userID] {
+		if c.msg != nil && strings.HasPrefix(strings.TrimSpace(c.msg.Text), "/start") {
+			c.Context, c.app, c.chatID = ctx, a, chatID
+			c.Send(fmt.Sprintf("⛔ У вас нет доступа к боту.\n\nВаш Telegram ID: <code>%d</code>\n"+
+				"Перешлите его администратору — он добавит вас в ADMIN_IDS.", userID), nil)
+			slog.Info("попытка доступа", "user", userID, "name", displayName(c.msg.From))
+		}
 		return
 	}
 

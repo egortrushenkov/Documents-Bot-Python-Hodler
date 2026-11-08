@@ -304,7 +304,8 @@ func TestFullFlow(t *testing.T) {
 	// Посторонний пользователь игнорируется
 	before := len(h.tg.calls)
 	h.app.handle(ctx, nil, &models.Update{Message: &models.Message{Text: "/start", Chat: models.Chat{ID: 2}, From: &models.User{ID: 2}}})
-	if len(h.tg.calls) != before {
-		t.Error("ответ постороннему пользователю")
+	// посторонний получает только «нет доступа» со своим ID — без меню и данных
+	if n := len(h.tg.calls) - before; n != 1 || !strings.Contains(h.tg.last().Text, "нет доступа") {
+		t.Errorf("ответ постороннему: %d сообщений, %q", n, h.tg.last().Text)
 	}
 }

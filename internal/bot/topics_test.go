@@ -105,3 +105,39 @@ func TestForumTopicWithoutFlag(t *testing.T) {
 		t.Fatalf("ветка не сохранена: %+v", ch)
 	}
 }
+
+func TestGroupCommandsForMembers(t *testing.T) {
+	h := newHarness(t)
+	member := func(text string) *call {
+		h.app.handle(context.Background(), nil, &models.Update{Message: &models.Message{
+			ID: 9, Text: text, Chat: models.Chat{ID: -100, Type: models.ChatTypeSupergroup},
+			From: &models.User{ID: 555, FirstName: "Сотрудник"}}})
+		c := h.tg.last()
+		return &c
+	}
+	if c := member("/today"); !strings.Contains(c.Text, "Чат не подключён") {
+		t.Fatalf("до /bind: %q", c.Text)
+	}
+	if c := member("/bind"); !strings.Contains(c.Text, "только администратор") || !strings.Contains(c.Text, "555") {
+		t.Fatalf("/bind от сотрудника: %q", c.Text)
+	}
+	h.group("/bind", 1)
+	if c := member("/today@hodler_bot"); !strings.Contains(c.Text, "Классика за") {
+		t.Fatalf("/today от сотрудника: %q", c.Text)
+	}
+	if c := member("/help"); !strings.Contains(c.Text, "Ваш Telegram ID: <code>555</code>") {
+		t.Fatalf("/help: %q", c.Text)
+	}
+	// В личке посторонний получает свой ID на /start
+	h.app.handle(context.Background(), nil, &models.Update{Message: &models.Message{
+		ID: 10, Text: "/start", Chat: models.Chat{ID: 555, Type: models.ChatTypePrivate}, From: &models.User{ID: 555}}})
+	if c := h.tg.last(); c.ChatID != "555" || !strings.Contains(c.Text, "нет доступа") {
+		t.Fatalf("личка постороннего: %+v", c)
+	}
+	before := len(h.tg.calls)
+	h.app.handle(context.Background(), nil, &models.Update{Message: &models.Message{
+		ID: 11, Text: "привет", Chat: models.Chat{ID: 555, Type: models.ChatTypePrivate}, From: &models.User{ID: 555}}})
+	if len(h.tg.calls) != before {
+		t.Fatal("посторонний получил ответ на обычный текст")
+	}
+}

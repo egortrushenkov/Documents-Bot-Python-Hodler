@@ -510,3 +510,15 @@ func (s *Store) SetDealAct(ctx context.Context, id int64, docxID, pdfID, docxNam
 func (s *Store) DealsInProgress(ctx context.Context, limit int) ([]*Deal, error) {
 	return s.queryDeals(ctx, "WHERE d.status='active' AND COALESCE(d.act_at,'')='' ORDER BY d.id DESC LIMIT ?", limit)
 }
+
+// PurgeTreasury удаляет начальный остаток и все ручные операции
+// (выводы, пополнения, выплаты и ручные начисления рефералам).
+func (s *Store) PurgeTreasury(ctx context.Context) (int64, error) {
+	r, err := s.db.ExecContext(ctx, "DELETE FROM treasury_ops")
+	if err != nil {
+		return 0, err
+	}
+	n, _ := r.RowsAffected()
+	_, _ = s.db.ExecContext(ctx, "DELETE FROM notifications WHERE entity='treasury'")
+	return n, nil
+}

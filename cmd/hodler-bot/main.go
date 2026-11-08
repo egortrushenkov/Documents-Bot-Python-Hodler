@@ -6,7 +6,8 @@
 //	hodler-bot backup <файл>   — консистентная копия БД
 //	hodler-bot export [-no-env] [файл.tar.gz] — полная копия (БД + шаблоны + .env) для переноса
 //	hodler-bot import [-force] [-no-env] <файл.tar.gz> — развернуть копию на новом сервере
-//	hodler-bot purge-deals [-yes] — очистить журнал сделок (компании, реквизиты, нумерация остаются)
+//	hodler-bot purge-deals [-treasury] [-yes] — очистить журнал сделок (и остатки с -treasury);
+//	                                          компании, реквизиты, нумерация остаются
 package main
 
 import (
@@ -196,17 +197,24 @@ func runImport(ctx context.Context, cfg *config.Config, args []string) error {
 func runPurge(ctx context.Context, cfg *config.Config, st *storage.Store, args []string) error {
 	fs := flag.NewFlagSet("purge-deals", flag.ExitOnError)
 	yes := fs.Bool("yes", false, "подтвердить удаление")
+	treasury := fs.Bool("treasury", false, "удалить и остатки: начальный остаток, выводы, выплаты рефералам")
 	_ = fs.Parse(args)
 	if _, err := st.Migrate(ctx, cfg.BackupBeforeMigrate); err != nil {
 		return err
 	}
-	var deals, signed, buybacks int
+	var deals, signed, buybacks, ops int
 	db := st.DB()
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM deals").Scan(&deals)
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM signed_docs WHERE deal_id IS NOT NULL").Scan(&signed)
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM buybacks").Scan(&buybacks)
+	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasury_ops").Scan(&ops)
 	fmt.Printf("Будет удалено: сделок — %d, подписанных документов — %d, откупок — %d.\n", deals, signed, buybacks)
-	fmt.Println("Останутся: компании, рефералы, поставщики, реквизиты, шаблоны, свои переменные, КВВО, счётчики номеров.")
+	if *treasury {
+		fmt.Printf("И остатки: начальный остаток и ручные операции (выводы, выплаты рефералам) — %d записей.\n", ops)
+	} else if ops > 0 {
+		fmt.Printf("Остатки (начальный остаток и %d операций) НЕ удаляются — добавьте -treasury, чтобы сбросить и их.\n", ops)
+	}
+	fmt.Println("Останутся: компании, поставщики, рефералы, реквизиты, кошельки, шаблоны, свои переменные, КВВО, нумерация.")
 	if !*yes {
 		fmt.Println("Чтобы удалить, повторите с флагом -yes (перед удалением будет сделана резервная копия).")
 		return nil
@@ -221,5 +229,12 @@ func runPurge(ctx context.Context, cfg *config.Config, st *storage.Store, args [
 		return err
 	}
 	fmt.Printf("Готово: удалено сделок — %d, подписанных документов — %d.\n", d, s)
+	if *treasury {
+		n, err := st.PurgeTreasury(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Остатки сброшены: удалено записей — %d. Задайте начальный остаток в боте: 💰 Остатки → 📥 Начальный остаток.\n", n)
+	}
 	return nil
 }

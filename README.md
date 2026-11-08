@@ -275,6 +275,7 @@ go build -o hodler-bot ./cmd/hodler-bot
 ```bash
 docker compose exec hodler-bot hodler-bot purge-deals        # показать, что будет удалено
 docker compose exec hodler-bot hodler-bot purge-deals -yes   # удалить (с резервной копией)
+docker compose exec hodler-bot hodler-bot purge-deals -treasury -yes   # и сбросить остатки (начальный остаток, выводы, выплаты рефералам)
 ```
 
 ---

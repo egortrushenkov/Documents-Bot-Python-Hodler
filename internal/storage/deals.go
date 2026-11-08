@@ -96,6 +96,16 @@ type Deal struct {
 	ClientBankID   sql.NullInt64
 	OperatorBankID sql.NullInt64
 
+	// Этапы сделки (миграция 0010)
+	InvoiceDocxFileID, InvoicePDFFileID string
+	InvoiceDocxName, InvoicePDFName     string
+	InvoicedAt                          string // YYYY-MM-DD, "-" — без счёта
+	PaidAt                              string
+	PaidAmount                          float64
+	PaidNote                            string
+	USDTAt                              string
+	ActAt                               string
+
 	// Заполняется при чтении из связанной откупки
 	BuyRate      float64
 	SupplierName string
@@ -111,7 +121,9 @@ const dealCols = `act_type, deal_number, deal_date, deal_date_iso, execution_dat
 	docx_file_id, pdf_file_id, docx_name, pdf_name,
 	status, version, updated_at, created_by, buyback_id,
 	tax_percent, fee_percent, referrer_name, referral_percent,
-	client_bank_id, operator_bank_id`
+	client_bank_id, operator_bank_id,
+	invoice_docx_file_id, invoice_pdf_file_id, invoice_docx_name, invoice_pdf_name,
+	invoiced_at, paid_at, paid_amount, paid_note, usdt_at, act_at`
 
 func dealArgs(d *Deal) []any {
 	return []any{d.ActType, d.DealNumber, d.DealDate, d.DealDateISO, d.ExecutionDate,
@@ -121,7 +133,9 @@ func dealArgs(d *Deal) []any {
 		d.DocxFileID, d.PDFFileID, d.DocxName, d.PDFName,
 		d.Status, d.Version, d.UpdatedAt, d.CreatedBy, d.BuybackID,
 		d.TaxPercent, d.FeePercent, d.ReferrerName, d.ReferralPercent,
-		d.ClientBankID, d.OperatorBankID}
+		d.ClientBankID, d.OperatorBankID,
+		d.InvoiceDocxFileID, d.InvoicePDFFileID, d.InvoiceDocxName, d.InvoicePDFName,
+		d.InvoicedAt, d.PaidAt, d.PaidAmount, d.PaidNote, d.USDTAt, d.ActAt}
 }
 
 func normalizeDeal(d *Deal) {
@@ -161,8 +175,11 @@ func (s *Store) UpdateDeal(ctx context.Context, d *Deal) error {
 	for i, c := range cols {
 		c = strings.TrimSpace(c)
 		switch c {
-		case "status", "version", "buyback_id", "created_by", "updated_at":
-			continue
+		case "status", "version", "buyback_id", "created_by", "updated_at",
+			"docx_file_id", "pdf_file_id", "docx_name", "pdf_name",
+			"invoice_docx_file_id", "invoice_pdf_file_id", "invoice_docx_name", "invoice_pdf_name",
+			"invoiced_at", "paid_at", "paid_amount", "paid_note", "usdt_at", "act_at":
+			continue // документы и этапы меняются своими методами
 		}
 		set = append(set, c+"=?")
 		vals = append(vals, args[i])
@@ -207,11 +224,15 @@ func scanDeal(sc interface{ Scan(...any) error }) (*Deal, error) {
 	var status, updated, createdBy, refName, supplier Str
 	var version Float
 	var tax, fee, refPct, buyRate Float
+	var st [9]Str
+	var paidAmt Float
 	err := sc.Scan(&d.ID, &s[0], &s[1], &s[2], &s[3], &s[4], &d.CompanyID, &s[5], &s[6], &s[7],
 		&s[8], &s[9], &va, &fiat, &s[10], &s[11], &s[12], &s[13], &s[14], &s[15], &s[16],
 		&s[17], &s[18], &s[19], &s[20], &s[21],
 		&status, &version, &updated, &createdBy, &d.BuybackID, &tax, &fee, &refName, &refPct,
-		&d.ClientBankID, &d.OperatorBankID, &buyRate, &supplier)
+		&d.ClientBankID, &d.OperatorBankID,
+		&st[0], &st[1], &st[2], &st[3], &st[4], &st[5], &paidAmt, &st[6], &st[7], &st[8],
+		&buyRate, &supplier)
 	if err != nil {
 		return nil, err
 	}
@@ -229,6 +250,9 @@ func scanDeal(sc interface{ Scan(...any) error }) (*Deal, error) {
 	d.Status, d.Version, d.UpdatedAt, d.CreatedBy = string(status), int(version), string(updated), string(createdBy)
 	d.TaxPercent, d.FeePercent, d.ReferrerName, d.ReferralPercent = float64(tax), float64(fee), string(refName), float64(refPct)
 	d.BuyRate, d.SupplierName = float64(buyRate), string(supplier)
+	d.InvoiceDocxFileID, d.InvoicePDFFileID, d.InvoiceDocxName, d.InvoicePDFName = string(st[0]), string(st[1]), string(st[2]), string(st[3])
+	d.InvoicedAt, d.PaidAt, d.PaidAmount, d.PaidNote, d.USDTAt, d.ActAt =
+		string(st[4]), string(st[5]), float64(paidAmt), string(st[6]), string(st[7]), string(st[8])
 	normalizeDeal(&d)
 	return &d, nil
 }
@@ -413,4 +437,76 @@ func (s *Store) CountSignedDocs(ctx context.Context, dealID int64) (int, error) 
 	var n int
 	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM signed_docs WHERE deal_id=?", dealID).Scan(&n)
 	return n, err
+}
+
+// ─── Этапы сделки ─────────────────────────────────────────────────────────────
+
+// Completed — акт сформирован, сделка завершена.
+func (d *Deal) Completed() bool { return d.ActAt != "" }
+
+// InvoiceDone — счёт выставлен или не нужен.
+func (d *Deal) InvoiceDone() bool { return d.InvoicedAt != "" }
+
+// Stage — текущий этап: invoice | payment | usdt | act | completed | cancelled.
+func (d *Deal) Stage() string {
+	switch {
+	case d.Cancelled():
+		return "cancelled"
+	case d.Completed():
+		return "completed"
+	}
+	if d.ActType == "buy" { // покупаем у клиента: сначала USDT от клиента, потом рубли
+		switch {
+		case d.USDTAt == "":
+			return "usdt"
+		case d.PaidAt == "":
+			return "payment"
+		}
+		return "act"
+	}
+	switch {
+	case !d.InvoiceDone():
+		return "invoice"
+	case d.PaidAt == "":
+		return "payment"
+	case d.USDTAt == "":
+		return "usdt"
+	}
+	return "act"
+}
+
+func (s *Store) setDealCols(ctx context.Context, id int64, set string, args ...any) error {
+	args = append(args, nowStamp(), id)
+	_, err := s.db.ExecContext(ctx, "UPDATE deals SET "+set+", updated_at=? WHERE id=?", args...)
+	return err
+}
+
+// SetDealInvoice — счёт сформирован (dateISO="" — снять отметку, "-" — счёт не нужен).
+func (s *Store) SetDealInvoice(ctx context.Context, id int64, docxID, pdfID, docxName, pdfName, dateISO string) error {
+	return s.setDealCols(ctx, id, `invoice_docx_file_id=?, invoice_pdf_file_id=?, invoice_docx_name=?,
+		invoice_pdf_name=?, invoiced_at=?`, docxID, pdfID, docxName, pdfName, dateISO)
+}
+
+// SetDealPaid — оплата ₽ (dateISO="" — снять отметку).
+func (s *Store) SetDealPaid(ctx context.Context, id int64, dateISO string, amount float64, note string) error {
+	return s.setDealCols(ctx, id, "paid_at=?, paid_amount=?, paid_note=?", dateISO, amount, note)
+}
+
+// SetDealUSDT — USDT выплачен/получен; транзакции (JSON) сохраняются в сделке.
+func (s *Store) SetDealUSDT(ctx context.Context, id int64, dateISO, txsJSON string) error {
+	if txsJSON == "" {
+		return s.setDealCols(ctx, id, "usdt_at=?", dateISO)
+	}
+	return s.setDealCols(ctx, id, "usdt_at=?, transactions=?", dateISO, txsJSON)
+}
+
+// SetDealAct — акт сформирован → сделка завершена (dateISO="" — снять).
+func (s *Store) SetDealAct(ctx context.Context, id int64, docxID, pdfID, docxName, pdfName, dateISO string) error {
+	return s.setDealCols(ctx, id, "docx_file_id=?, pdf_file_id=?, docx_name=?, pdf_name=?, act_at=?",
+		docxID, pdfID, docxName, pdfName, dateISO)
+}
+
+// DealsInProgress — активные незавершённые сделки.
+func (s *Store) DealsInProgress(ctx context.Context, limit int) ([]*Deal, error) {
+	return s.queryDeals(ctx, "WHERE d.status='active' AND COALESCE(d.act_at,'')='' ORDER BY d.id DESC LIMIT ?", limit)
 }

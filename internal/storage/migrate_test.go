@@ -146,3 +146,38 @@ func TestMigrateAccountsBackfill(t *testing.T) {
 		t.Fatalf("старые поля не синхронизированы: %q", c.BankAccount)
 	}
 }
+
+func TestMigrateDealStages(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "hodler.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// база версии 9: старый акт и отдельный счёт-заявка
+	if err := st.ensureMigrationsTable(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range Migrations[:9] {
+		if err := st.apply(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.DB().Exec(`
+		INSERT INTO deals (act_type, deal_number, deal_date, deal_date_iso, fiat_amount, docx_file_id, docx_name)
+		VALUES ('sell', '1', '01.11.2026', '2026-11-01', 1000, 'ACT', 'act.docx'),
+		       ('invoice', '2', '02.11.2026', '2026-11-02', 2000, 'INV', 'invoice.docx');`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Migrate(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	act, _ := st.Deal(ctx, 1)
+	if !act.Completed() || act.PaidAt != "2026-11-01" || act.USDTAt != "2026-11-01" || act.Stage() != "completed" {
+		t.Fatalf("старый акт: %+v", act)
+	}
+	inv, _ := st.Deal(ctx, 2)
+	if inv.ActType != "sell" || inv.InvoiceDocxFileID != "INV" || inv.DocxFileID != "" || inv.Stage() != "payment" {
+		t.Fatalf("старый счёт: %+v", inv)
+	}
+}

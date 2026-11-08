@@ -87,7 +87,7 @@ func (a *App) generateReport(c *Ctx, rate float64) {
 	var reportable []*storage.Deal
 	nSell := 0
 	for _, d := range deals {
-		if d.ActType == "sell" || d.ActType == "buy" {
+		if (d.ActType == "sell" || d.ActType == "buy") && d.Completed() { // в ФН — только завершённые (с актом)
 			reportable = append(reportable, d)
 			if d.ActType == "sell" {
 				nSell++
@@ -96,7 +96,7 @@ func (a *App) generateReport(c *Ctx, rate float64) {
 	}
 	label := report.MonthLabel(month)
 	if len(reportable) == 0 {
-		c.SendPlain(fmt.Sprintf("За %s нет актов продажи/покупки (счета-заявки в отчёт не входят).", label),
+		c.SendPlain(fmt.Sprintf("За %s нет завершённых сделок (с актом) — в отчёт ФН входят только они.", label),
 			backToMainKB())
 		return
 	}

@@ -45,18 +45,16 @@ func dealCardText(d *storage.Deal, signed int) string {
 		fmt.Sprintf("<b>Клиент:</b> %s (%s)", or(d.ClientName), escape(d.ClientResident)),
 		"",
 		fmt.Sprintf("<b>Актив:</b> %s (%s)", or(d.VAType), or(d.Network)),
-		"<b>Сумма ВА:</b> " + util.Num(d.VAAmount),
-		fmt.Sprintf("<b>Сумма %s:</b> %s", escape(d.FiatCurrency), util.Num(d.FiatAmount)),
+		"<b>Сумма ВА:</b> " + util.RU(d.VAAmount, 2),
+		fmt.Sprintf("<b>Сумма %s:</b> %s", escape(d.FiatCurrency), util.RUAmount(d.FiatAmount)),
 		fmt.Sprintf("<b>Курс:</b> %s   <b>КВВО:</b> %s", or(d.ExchangeRate), or(d.KVVO)),
 	}
 	if txs := storage.ParseTxs(d.Transactions); len(txs) > 1 {
 		lines = append(lines, fmt.Sprintf("<b>Транзакций:</b> %d", len(txs)))
 	}
+	lines = append(lines, "", progressText(d))
 	if profit.Profitable(d) {
 		lines = append(lines, "", profitLines(d))
-	}
-	if d.Cancelled() {
-		lines = append([]string{"❌ <b>СДЕЛКА ОТМЕНЕНА</b>"}, lines...)
 	}
 	meta := []string{}
 	if d.Version > 1 {
@@ -85,6 +83,17 @@ func (a *App) dealsCallback(c *Ctx, head, rest string) {
 		case "menu":
 			c.s.Clear()
 			a.showDealsMenu(c)
+		case "open":
+			deals, err := a.st.DealsInProgress(c, 30)
+			if err != nil {
+				c.fail(err)
+				return
+			}
+			if len(deals) == 0 {
+				c.Answer("Все сделки завершены", true)
+				return
+			}
+			c.Edit("⏳ <b>Сделки в работе</b>\n🧾 ждёт счёта · 💰 ждёт оплаты · 💸 ждёт USDT · 📄 ждёт акта", dealsListKB(deals))
 		case "recent":
 			deals, err := a.st.RecentDeals(c, 10, 0)
 			if err != nil {
@@ -132,7 +141,8 @@ func (a *App) dealsCallback(c *Ctx, head, rest string) {
 			return
 		}
 		sent := false
-		for _, f := range [][2]string{{d.DocxFileID, d.DocxName}, {d.PDFFileID, d.PDFName}} {
+		for _, f := range [][2]string{{d.InvoiceDocxFileID, d.InvoiceDocxName}, {d.InvoicePDFFileID, d.InvoicePDFName},
+			{d.DocxFileID, d.DocxName}, {d.PDFFileID, d.PDFName}} {
 			if f[0] != "" && c.SendFileID(f[0], f[1]) == nil {
 				sent = true
 			}
@@ -242,7 +252,7 @@ func (a *App) showDealCard(c *Ctx, id int64) {
 		c.fail(err)
 		return
 	}
-	c.Edit(dealCardText(d, signed), dealCardKB2(d, d.DocxFileID != "" || d.PDFFileID != "", signed))
+	c.Edit(dealCardText(d, signed), dealCardKB2(d, d.DocxFileID != "" || d.InvoiceDocxFileID != "", signed))
 }
 
 // signedInput — приём файлов подписанных актов (в БД — только file_id).

@@ -37,6 +37,14 @@ type Treasury struct {
 	OpenEstimatedBuyUSD float64 // сколько USDT вернёт откупка этих ₽ по последнему курсу
 	LastBuyRate         float64
 
+	// Сделки в работе: ещё не прошедшие этапы оплаты/выплаты
+	AwaitRub      float64 // ждём оплату от клиентов
+	AwaitRubCount int
+	ToSendUSDT    float64 // должны отправить клиентам USDT
+	ToSendCount   int
+	ToPayRub      float64 // должны заплатить клиентам за купленный у них USDT
+	ToPayCount    int
+
 	CKD, Tax, Net float64 // по сделкам с откупкой
 	RefAccrued    map[string]float64
 	RefPaid       map[string]float64
@@ -87,15 +95,30 @@ func ComputeTreasury(opening *storage.TreasuryOp, deals []*storage.Deal, buyback
 	}
 	for _, d := range deals {
 		usdt := d.VAAmount
+		rub := d.FiatAmount
+		if d.PaidAmount > 0 {
+			rub = d.PaidAmount
+		}
 		switch d.ActType {
 		case "sell":
 			r := Compute(d)
 			if usdt <= 0 {
 				usdt = r.Volume
 			}
-			t.SellCount++
-			t.SellUSDT += usdt
-			t.SellRub += d.FiatAmount
+			// Движения денег — только по пройденным этапам
+			if d.PaidAt != "" {
+				t.SellRub += rub
+			} else {
+				t.AwaitRub += d.FiatAmount
+				t.AwaitRubCount++
+			}
+			if d.USDTAt != "" {
+				t.SellCount++
+				t.SellUSDT += usdt
+			} else {
+				t.ToSendUSDT += usdt
+				t.ToSendCount++
+			}
 			if r.HasBuyback {
 				t.CKD += r2(r.CKD)
 				t.Tax += r2(r.Tax)
@@ -103,15 +126,22 @@ func ComputeTreasury(opening *storage.TreasuryOp, deals []*storage.Deal, buyback
 				if d.ReferrerName != "" && d.ReferralPercent > 0 {
 					t.RefAccrued[d.ReferrerName] += r2(r.Referral)
 				}
-			} else {
+			} else if d.USDTAt != "" { // выдано наперёд: USDT уже ушёл, откупки нет
 				t.OpenCount++
 				t.OpenUSDT += usdt
 				t.OpenRub += d.FiatAmount
 			}
 		case "buy":
-			t.BuyCount++
-			t.BuyUSDT += usdt
-			t.BuyRub += d.FiatAmount
+			if d.USDTAt != "" {
+				t.BuyCount++
+				t.BuyUSDT += usdt
+			}
+			if d.PaidAt != "" {
+				t.BuyRub += rub
+			} else {
+				t.ToPayRub += d.FiatAmount
+				t.ToPayCount++
+			}
 		}
 	}
 	if t.LastBuyRate > 0 {

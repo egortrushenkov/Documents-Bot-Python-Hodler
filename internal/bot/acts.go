@@ -1,18 +1,13 @@
 package bot
 
 import (
-	"database/sql"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"hodler-doc-bot/internal/chain"
-	"hodler-doc-bot/internal/cleanup"
 	"hodler-doc-bot/internal/docgen"
 	"hodler-doc-bot/internal/storage"
 	"hodler-doc-bot/internal/util"
@@ -116,7 +111,7 @@ func dealSummary(d *docgen.Draft, client *storage.Company) string {
 	lines = append(lines, "",
 		"<b>Кошелёк клиента:</b>\n<code>"+g("client_wallet")+"</code>",
 		"<b>Кошелёк оператора:</b>\n<code>"+g("operator_wallet")+"</code>")
-	if len(rows) <= 1 && actType != "invoice" {
+	if len(rows) <= 1 && actType != "invoice" && d.Get("tx_hash") != "" {
 		lines = append(lines, "<b>Хэш:</b>\n<code>"+g("tx_hash")+"</code>")
 	}
 	lines = append(lines, "",
@@ -130,7 +125,7 @@ func dealSummary(d *docgen.Draft, client *storage.Company) string {
 func (a *App) startCreateAct(c *Ctx) {
 	c.s.Clear()
 	c.s.State = stActSelectType
-	c.Reply("📋 <b>Создание акта</b>\n\nВыберите тип операции:", actTypeKB())
+	c.Reply("📋 <b>Новая сделка</b>\n\nВыберите тип операции.\nДальше: счёт → оплата → выплата USDT → акт — всё в карточке сделки.", actTypeKB())
 }
 
 // actCallback — кнопки диалога создания акта (с проверкой шага, как в FSM).
@@ -281,7 +276,11 @@ func (a *App) actCallback(c *Ctx, head, rest string) {
 		c.Edit("✏️ <b>"+escape(label)+"</b>\n\nТекущее: <code>"+escape(c.act().Get(rest))+
 			"</code>\n\nВведите новое значение:", nil)
 	case head == "act" && rest == "generate" && st == stActConfirm:
-		a.generateAct(c)
+		if c.act().Get("editing_deal_id") != "" {
+			a.saveDealEdit(c)
+		} else {
+			a.createDeal(c)
+		}
 	}
 }
 
@@ -295,7 +294,7 @@ func (a *App) txCallback(c *Ctx, rest string) {
 			skipKB("tx:one_skip", "Пропустить (-)"))
 	case rest == "one_skip" && st == stActTxOneHash:
 		a.finishSingle(c, "-")
-		a.askCommission(c)
+		a.afterTxs(c)
 	case rest == "split" && st == stActSplitMode:
 		d.Txs = nil // сюда копятся тесты
 		a.askAddTx(c)
@@ -318,7 +317,7 @@ func (a *App) txCallback(c *Ctx, rest string) {
 			util.Fmt2(rem), escape(d.Get("va_type"))), skipKB("tx:rem_skip", "Пропустить (-)"))
 	case rest == "rem_skip" && st == stActRemainderHash:
 		a.finishSplit(c, "-")
-		a.askCommission(c)
+		a.afterTxs(c)
 	}
 }
 
@@ -370,7 +369,7 @@ func (a *App) actMessage(c *Ctx, text string) {
 		a.afterOperatorWallet(c)
 	case stActTxOneHash:
 		a.finishSingle(c, text)
-		a.askCommission(c)
+		a.afterTxs(c)
 	case stActExtraVA:
 		a.inputTestVA(c, text)
 	case stActExtraTxHash:
@@ -378,7 +377,7 @@ func (a *App) actMessage(c *Ctx, text string) {
 		a.askAddTx(c)
 	case stActRemainderHash:
 		a.finishSplit(c, text)
-		a.askCommission(c)
+		a.afterTxs(c)
 	case stActCommissionFiat:
 		d.Fields["commission_fiat"] = text
 		a.askCommissionVA(c)
@@ -408,7 +407,7 @@ func (a *App) actMessage(c *Ctx, text string) {
 // ─── Шаги ─────────────────────────────────────────────────────────────────────
 
 func (a *App) stepType(c *Ctx, actType string) {
-	if _, ok := directionLabels[actType]; !ok {
+	if actType != "sell" && actType != "buy" {
 		return
 	}
 	c.act().Fields["act_type"] = actType
@@ -650,18 +649,8 @@ func (a *App) askOperatorBank(c *Ctx) {
 	c.Reply("<b>Шаг: Наши реквизиты</b>\nНа какой наш счёт / с какого счёта?", ikb(bankRows(banks, "ob", cur)...))
 }
 
-// afterBanks: счёт-заявка не дробится на транзакции — сразу к комиссии.
-func (a *App) afterBanks(c *Ctx) {
-	if c.act().Get("act_type") == "invoice" {
-		a.askCommission(c)
-		return
-	}
-	d := c.act()
-	c.s.State = stActSplitMode
-	c.Reply(fmt.Sprintf("<b>Шаг: Транзакции</b>\nОбщая сумма: <b>%s %s</b>\n\n"+
-		"Перевод одной транзакцией или разбить на части (например тест + остаток)?",
-		escape(d.GetOr("va_amount", "—")), escape(d.Get("va_type"))), splitModeKB())
-}
+// afterBanks: транзакции USDT вводятся позже, на этапе выплаты.
+func (a *App) afterBanks(c *Ctx) { a.askCommission(c) }
 
 // finishSingle: одна транзакция = вся сумма; хэш — в основном поле (для правок) и списком.
 func (a *App) finishSingle(c *Ctx, hash string) {
@@ -754,8 +743,10 @@ func (a *App) showConfirm(c *Ctx) {
 		return
 	}
 	prefix := ""
+	kb := confirmActKB()
 	if d.Get("editing_deal_id") != "" {
-		prefix = "✏️ <b>Переделка заявки</b> — измените поля и сгенерируйте заново\n\n"
+		prefix = "✏️ <b>Изменение сделки</b> — поправьте поля и сохраните. Уже сформированные счёт и акт пересоздадутся.\n\n"
+		kb = confirmEditKB()
 	}
 	extra := ""
 	if bid, ok := parseID(d.Get("cl_bank_id")); ok {
@@ -768,7 +759,7 @@ func (a *App) showConfirm(c *Ctx) {
 			extra += "\n<b>Наши реквизиты:</b> " + escape(b.Title())
 		}
 	}
-	c.Reply(prefix+dealSummary(d, client)+extra, confirmActKB())
+	c.Reply(prefix+dealSummary(d, client)+extra, kb)
 }
 
 // ─── Генерация ────────────────────────────────────────────────────────────────
@@ -777,216 +768,4 @@ func parseDealNumber(s string) (int64, bool) {
 	s = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(s), "№"))
 	n, err := strconv.ParseInt(strings.TrimPrefix(s, "+"), 10, 64)
 	return n, err == nil
-}
-
-func (a *App) generateAct(c *Ctx) {
-	c.Answer("⏳ Генерирую документы...", false)
-	d := c.act()
-	companyID, _ := parseID(d.Get("company_id"))
-	client, err := a.st.Company(c, companyID)
-	if err != nil || client == nil {
-		c.Send("❌ Компания не найдена — начните заново.", backToMainKB())
-		return
-	}
-	op, err := a.st.Settings(c)
-	if err != nil {
-		c.fail(err)
-		return
-	}
-	custom, err := a.st.CompanyCustom(c, companyID)
-	if err != nil {
-		c.fail(err)
-		return
-	}
-
-	// Выбранные в сделке реквизиты вместо основных
-	clientMap := client.Map()
-	opMap := map[string]string{}
-	for k, v := range op {
-		opMap[k] = v
-	}
-	var clBankID, opBankID sql.NullInt64
-	if id, ok := parseID(d.Get("cl_bank_id")); ok {
-		if b, _ := a.st.BankAccount(c, id); b != nil {
-			clientMap["bank_name"], clientMap["bank_account"], clientMap["bank_bik"] = b.BankName, b.Account, b.BIK
-			clBankID = sql.NullInt64{Int64: id, Valid: true}
-		}
-	}
-	if id, ok := parseID(d.Get("op_bank_id")); ok {
-		if b, _ := a.st.BankAccount(c, id); b != nil {
-			opMap["bank_name"], opMap["bank_account"], opMap["bank_bik"] = b.BankName, b.Account, b.BIK
-			opBankID = sql.NullInt64{Int64: id, Valid: true}
-		}
-	}
-
-	status := c.SendPlain("⏳ Создаю DOCX...", nil)
-	setStatus := func(t string) {
-		if status != nil {
-			_, _ = a.b.EditMessageText(c, editPlain(c.chatID, status.ID, t))
-		}
-	}
-	docxPath, err := docgen.Generate(a.cfg.TemplatesDir, a.cfg.OutputDir, d, opMap, clientMap, custom)
-	if err != nil {
-		if status != nil {
-			c.Delete(status.ID)
-		}
-		if errors.Is(err, docgen.ErrTemplateNotFound) {
-			c.Send("❌ <b>Шаблон не найден</b>\n\nПроверьте, что нужный .docx лежит в папке <code>templates/</code> "+
-				"(его можно загрузить через меню 📄 Шаблоны).\n\nДетали: "+escape(err.Error()), nil)
-		} else {
-			c.Send("❌ <b>Ошибка генерации</b>\n<code>"+escape(err.Error())+"</code>", nil)
-		}
-		return
-	}
-
-	setStatus("⏳ Конвертирую в PDF...")
-	pdfPath, pdfErr := a.pdf.Convert(c, docxPath)
-	if pdfErr != nil {
-		pdfPath = ""
-	}
-	defer cleanup.TryRemove(docxPath, pdfPath) // файлы уйдут в Telegram — локальные копии не нужны
-
-	actType := d.GetOr("act_type", "sell")
-	docWord := "Акт"
-	if actType == "invoice" {
-		docWord = "Счёт-заявка"
-	}
-	txLine := ""
-	if actType != "invoice" && len(d.Txs) > 1 {
-		txLine = fmt.Sprintf("\nТранзакций: %d", len(d.Txs))
-	}
-	caption := fmt.Sprintf("✅ <b>%s №%s от %s</b>\nТип: %s\nКлиент: %s%s",
-		docWord, escape(d.Get("deal_number")), escape(d.Get("deal_date")),
-		directionLabels[actType], escape(client.ShortName), txLine)
-
-	msgDocx, err := c.SendFile(docxPath, filepath.Base(docxPath), caption+"\n📄 DOCX", true)
-	if err != nil {
-		if status != nil {
-			c.Delete(status.ID)
-		}
-		c.Send("❌ <b>Ошибка генерации</b>\n<code>"+escape(err.Error())+"</code>", nil)
-		return
-	}
-	var pdfFileID, pdfName string
-	if pdfErr == nil {
-		if m, err := c.SendFile(pdfPath, filepath.Base(pdfPath), caption+"\n📑 PDF", true); err == nil && m.Document != nil {
-			pdfFileID, pdfName = m.Document.FileID, filepath.Base(pdfPath)
-		} else if err != nil {
-			c.Send("⚠️ PDF не отправлен:\n<code>"+escape(err.Error())+"</code>", nil)
-		}
-	} else {
-		c.Send("⚠️ PDF не создан:\n<code>"+escape(pdfErr.Error())+"</code>", nil)
-	}
-
-	if len(d.Txs) <= 1 && actType != "invoice" { // одна транзакция = вся сумма (с учётом правок)
-		d.Txs = []storage.Tx{{VAAmount: d.Get("va_amount"), TxHash: d.Get("tx_hash")}}
-	}
-	txsJSON, _ := json.Marshal(d.Txs)
-	if d.Txs == nil {
-		txsJSON = []byte("[]")
-	}
-	docxFileID := ""
-	if msgDocx.Document != nil {
-		docxFileID = msgDocx.Document.FileID
-	}
-	// Журнал сделок: file_id Telegram вместо локальных файлов
-	nd := &storage.Deal{
-		ActType:        actType,
-		DealNumber:     d.Get("deal_number"),
-		DealDate:       d.Get("deal_date"),
-		DealDateISO:    dateISO(d.Get("deal_date")),
-		ExecutionDate:  d.Get("execution_date"),
-		CompanyID:      sql.NullInt64{Int64: companyID, Valid: true},
-		ClientName:     client.ShortName,
-		ClientINN:      client.INN,
-		ClientResident: client.Resident,
-		VAType:         d.Get("va_type"),
-		Network:        d.Get("network"),
-		VAAmount:       util.ToFloat(d.Get("va_amount")),
-		FiatAmount:     util.ToFloat(d.Get("fiat_amount")),
-		FiatCurrency:   "RUB",
-		ExchangeRate:   d.Get("exchange_rate"),
-		KVVO:           d.Get("kvvo"),
-		ClientWallet:   d.Get("client_wallet"),
-		OperatorWallet: d.Get("operator_wallet"),
-		CommissionFiat: d.Get("commission_fiat"),
-		CommissionVA:   d.Get("commission_va"),
-		Transactions:   string(txsJSON),
-		DocxFileID:     docxFileID,
-		PDFFileID:      pdfFileID,
-		DocxName:       filepath.Base(docxPath),
-		PDFName:        pdfName,
-		CreatedBy:      c.userName,
-		ClientBankID:   clBankID,
-		OperatorBankID: opBankID,
-	}
-	// Снимок параметров прибыли на момент сделки: поздняя смена настроек
-	// или реферала клиента не переписывает историю
-	nd.TaxPercent, nd.FeePercent = 5, 0.05
-	if v, ok := util.ParseFloat(op["tax_percent"]); ok {
-		nd.TaxPercent = v
-	}
-	if v, ok := util.ParseFloat(op["bank_fee_percent"]); ok {
-		nd.FeePercent = v
-	}
-	nd.ReferrerName, nd.ReferralPercent, _ = a.st.CompanyReferral(c, client)
-
-	var dealID int64
-	editingID, editing := parseID(d.Get("editing_deal_id"))
-	if editing {
-		old, _ := a.st.Deal(c, editingID)
-		nd.ID, dealID = editingID, editingID
-		if err := a.st.UpdateDeal(c, nd); err != nil {
-			c.fail(err)
-			return
-		}
-		if old != nil {
-			nd.Version = old.Version + 1
-			nd.Status = old.Status
-			nd.BuybackID = old.BuybackID
-			changes := dealDiff(old, nd)
-			if len(changes) == 0 {
-				changes = []string{"• документы перегенерированы, данные без изменений"}
-			}
-			a.refreshDealNotify(dealID, fmt.Sprintf("✏️ Сделка №%s изменена (версия %d)%s:\n%s",
-				escape(nd.DealNumber), nd.Version, by(c.userName), strings.Join(changes, "\n")))
-			if old.BuybackID.Valid {
-				a.refreshBuybackNotify(old.BuybackID.Int64, "")
-			}
-		}
-	} else {
-		if dealID, err = a.st.AddDeal(c, nd); err != nil {
-			c.fail(err)
-			return
-		}
-		if actType != "invoice" { // счёт-заявка — ещё не сделка
-			if saved, _ := a.st.Deal(c, dealID); saved != nil {
-				a.notifyNew("deal", dealID, dealNotifyText(saved))
-			}
-		}
-	}
-	// Двигаем счётчики номеров (клиентский и общий)
-	kind := "act"
-	if actType == "invoice" {
-		kind = "invoice"
-	}
-	if n, ok := parseDealNumber(d.Get("deal_number")); ok {
-		if err := a.st.RecordNumberUsed(c, companyID, kind, n); err != nil {
-			c.fail(err)
-		}
-	}
-	if status != nil {
-		c.Delete(status.ID)
-	}
-	number := d.Get("deal_number")
-	warn := ""
-	if dateISO(d.Get("deal_date")) == "" {
-		warn = "\n⚠️ Дата заявки не распознана — сделка не попадёт в месячный отчёт ФН."
-	}
-	c.s.Clear()
-	verb := "сохранена в журнал"
-	if editing {
-		verb = "переделана: документы и журнал обновлены"
-	}
-	c.SendPlain(fmt.Sprintf("💾 Сделка №%s %s.%s", number, verb, warn), afterGenerateKB(dealID))
 }

@@ -186,7 +186,7 @@ func TestFullFlow(t *testing.T) {
 		t.Fatalf("company %+v", c)
 	}
 
-	// ─── Акт с разбивкой ───
+	// ─── Сделка: создание → счёт → оплата → USDT (тест + остаток) → акт ───
 	h.expect(h.text(navCreateAct), "Выберите тип операции")
 	h.expect(h.click("act_type:sell"), "sel_company:1")
 	h.expect(h.click("sel_company:1"), "Использовать №500")
@@ -199,29 +199,50 @@ func TestFullFlow(t *testing.T) {
 	h.expect(h.click("skip:exchange_rate"), "КВВО")
 	h.expect(h.text("12345"), "Кошелёк клиента") // свой КВВО сохраняется
 	h.expect(h.click("skip:client_wallet"), "Наш кошелёк")
-	h.expect(h.click("skip:operator_wallet"), "Транзакции")
+	h.expect(h.click("skip:operator_wallet"), "Комиссия в RUB")
+	h.click("skip:commission_fiat")
+	h.expect(h.click("skip:commission_va"), "Дата исполнения")
+	h.expect(h.click("skip:execution_date"), "✅ Создать сделку")
+	h.click("act:edit_menu")
+	h.click("edit_act_field:commission_fiat")
+	h.expect(h.text("1.5%"), "1.5%")
+	card := h.click("act:generate")
+	h.expect(card, "Сделка создана")
+	h.expect(card, "👉 🧾 Счёт на оплату")
+	h.expect(card, "st:inv:1")
+
+	// Счёт
+	h.click("st:inv:1")
+	if !h.tg.find("sendDocument", "invoice_500-") {
+		t.Fatal("счёт не отправлен")
+	}
+	if !h.tg.find("sendMessage", "PDF не создан") {
+		t.Fatal("нет предупреждения о PDF")
+	}
+	h.expect(h.tg.last(), "👉 💰 Оплата ₽ получена")
+
+	// Оплата: другая сумма и дата
+	h.click("st:paid:1")
+	h.text("499 000")
+	h.expect(h.text("12.04.2026"), "Оплата ₽ получена — 499 000 ₽ · 12.04.2026")
+
+	// USDT: тест + остаток
+	h.expect(h.click("st:usdt:1"), "Сумма: <b>6 287,73 USDT</b>")
 	h.expect(h.click("tx:split"), "Остаток: 6287.73")
 	h.click("tx:add")
 	h.expect(h.text("7000"), "меньше остатка")
 	h.text("100")
 	h.expect(h.text("hash_test"), "Остаток: 6187.73")
 	h.click("tx:done")
-	h.expect(h.text("hash_rest"), "Комиссия в RUB")
-	h.click("skip:commission_fiat")
-	h.expect(h.click("skip:commission_va"), "Дата исполнения")
-	h.expect(h.click("skip:execution_date"), "Транзакций: 2")
-	h.click("act:edit_menu")
-	h.click("edit_act_field:commission_fiat")
-	h.expect(h.text("1.5%"), "1.5%")
-	h.click("act:generate")
+	h.expect(h.text("hash_rest"), "Сегодня")
+	h.expect(h.click("st:usdttoday:1"), "👉 📄 Акт")
 
+	// Акт → завершена
+	h.click("st:act:1")
 	if !h.tg.find("sendDocument", "act_buy_500-") {
-		t.Fatal("DOCX не отправлен")
+		t.Fatal("акт не отправлен")
 	}
-	if !h.tg.find("sendMessage", "PDF не создан") {
-		t.Fatal("нет предупреждения о PDF")
-	}
-	h.expect(h.tg.last(), "сохранена в журнал")
+	h.expect(h.tg.last(), "Сделка завершена")
 
 	ctx := context.Background()
 	d, err := h.st.Deal(ctx, 1)
@@ -229,7 +250,8 @@ func TestFullFlow(t *testing.T) {
 		t.Fatal("сделка не в журнале", err)
 	}
 	if d.DealDateISO != "2026-04-12" || d.VAAmount != 6287.726 || d.CommissionFiat != "1.5%" ||
-		!strings.Contains(d.Transactions, "hash_rest") || d.DocxFileID == "" {
+		!strings.Contains(d.Transactions, "hash_rest") || d.DocxFileID == "" || d.InvoiceDocxFileID == "" ||
+		!d.Completed() || d.PaidAmount != 499000 || d.PaidAt != "2026-04-12" {
 		t.Fatalf("deal %+v", d)
 	}
 	if n, ok, _ := h.st.PeekCompanyNumber(ctx, 1, "act"); !ok || n != 501 {

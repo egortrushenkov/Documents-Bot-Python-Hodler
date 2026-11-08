@@ -52,12 +52,28 @@ func (h *harness) sellDeal(companyID, number, va, rub string) {
 	h.click("kvvo:99082")
 	h.click("skip:client_wallet")
 	h.click("skip:operator_wallet")
-	h.click("tx:single")
-	h.click("tx:one_skip")
 	h.click("skip:commission_fiat")
 	h.click("skip:commission_va")
 	h.click("skip:execution_date")
 	h.click("act:generate")
+	// все этапы: без счёта → оплата → USDT → акт
+	id := h.lastDealID()
+	sid := fmt.Sprint(id)
+	h.click("st:invskip:" + sid)
+	h.click("st:paid:" + sid)
+	h.click("st:paidamt:" + sid)
+	h.click("st:paidtoday:" + sid)
+	h.click("st:usdt:" + sid)
+	h.click("tx:single")
+	h.click("tx:one_skip")
+	h.click("st:usdttoday:" + sid)
+	h.click("st:act:" + sid)
+}
+
+func (h *harness) lastDealID() int64 {
+	var id int64
+	h.app.st.DB().QueryRow("SELECT MAX(id) FROM deals").Scan(&id)
+	return id
 }
 
 func TestBuybackProfitNotifications(t *testing.T) {
@@ -130,7 +146,7 @@ func TestBuybackProfitNotifications(t *testing.T) {
 
 	// Переделка заявки: меняем сумму → ответ «было → стало» на исходное уведомление
 	h.click("deal:2")
-	h.expect(h.click("dealx:edit:2"), "Переделка заявки")
+	h.expect(h.click("dealx:edit:2"), "Изменение сделки")
 	h.click("act:edit_menu")
 	h.click("edit_act_field:fiat_amount")
 	h.text("1050000")

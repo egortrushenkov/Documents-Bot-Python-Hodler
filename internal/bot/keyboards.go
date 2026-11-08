@@ -37,7 +37,8 @@ func grid(n int, btns ...models.InlineKeyboardButton) []kbRow {
 // ─── Постоянная клавиатура навигации ──────────────────────────────────────────
 
 const (
-	navCreateAct = "📋 Создать акт"
+	navCreateAct = "📋 Новая сделка"
+	navCreateOld = "📋 Создать акт" // старая клавиатура у пользователей
 	navDeals     = "🗂 Сделки"
 	navReport    = "📊 Отчёт ФН"
 	navCompanies = "🏢 Компании"
@@ -66,7 +67,7 @@ func navKB() *models.ReplyKeyboardMarkup {
 
 func mainMenuKB() *models.InlineKeyboardMarkup {
 	return ikb(
-		row(btn("📋 Создать акт", "menu:create_act"), btn("🏢 Компании", "menu:companies")),
+		row(btn("📋 Новая сделка", "menu:create_act"), btn("🏢 Компании", "menu:companies")),
 		row(btn("🗂 Сделки", "deals:menu"), btn("🔁 Откупки", "bb:menu")),
 		row(btn("📈 Прибыль", "profit:menu"), btn("💰 Остатки", "tr:menu")),
 		row(btn("📊 Отчёт ФН", "report:menu")),
@@ -152,7 +153,6 @@ func actTypeKB() *models.InlineKeyboardMarkup {
 	return ikb(
 		row(btn("📤 Продаём ВА клиенту (покупка у нас)", "act_type:sell")),
 		row(btn("📥 Покупаем ВА у клиента (продажа нам)", "act_type:buy")),
-		row(btn("🧾 Счёт-заявка на покупку клиентом", "act_type:invoice")),
 		row(btn("❌ Отмена", "menu:main")),
 	)
 }
@@ -235,7 +235,15 @@ func skipKB(data, label string) *models.InlineKeyboardMarkup {
 
 func confirmActKB() *models.InlineKeyboardMarkup {
 	return ikb(
-		row(btn("✅ Генерировать документы", "act:generate")),
+		row(btn("✅ Создать сделку", "act:generate")),
+		row(btn("✏️ Редактировать поля", "act:edit_menu")),
+		row(btn("❌ Отмена", "menu:main")),
+	)
+}
+
+func confirmEditKB() *models.InlineKeyboardMarkup {
+	return ikb(
+		row(btn("💾 Сохранить изменения", "act:generate")),
 		row(btn("✏️ Редактировать поля", "act:edit_menu")),
 		row(btn("❌ Отмена", "menu:main")),
 	)
@@ -252,7 +260,6 @@ var actEditFields = [][2]string{
 	{"kvvo", "КВВО"},
 	{"client_wallet", "Кошелёк клиента"},
 	{"operator_wallet", "Кошелёк оператора"},
-	{"tx_hash", "Хэш транзакции"},
 	{"commission_fiat", "Комиссия в RUB"},
 	{"commission_va", "Комиссия в ВА"},
 	{"execution_date", "Дата исполнения"},
@@ -310,7 +317,7 @@ func settingsKB() *models.InlineKeyboardMarkup {
 
 func dealsMenuKB() *models.InlineKeyboardMarkup {
 	return ikb(
-		row(btn("🕐 Последние сделки", "deals:recent")),
+		row(btn("⏳ В работе", "deals:open"), btn("🕐 Последние", "deals:recent")),
 		row(btn("🏢 Сделки по клиенту", "deals:by_company")),
 		row(btn("📦 Архив подписанных (ZIP)", "arch:menu")),
 		row(btn("🏠 Главное меню", "menu:main")),
@@ -322,13 +329,8 @@ var actIcons = map[string]string{"sell": "📤", "buy": "📥", "invoice": "🧾
 func dealsListKB(deals []*storage.Deal) *models.InlineKeyboardMarkup {
 	var rows []kbRow
 	for _, d := range deals {
-		icon := actIcons[d.ActType]
-		if icon == "" {
-			icon = "📄"
-		}
-		if d.Cancelled() {
-			icon = "❌"
-		}
+		icon := map[string]string{"invoice": "🧾", "payment": "💰", "usdt": "💸", "act": "📄",
+			"completed": "✅", "cancelled": "❌"}[d.Stage()]
 		text := fmt.Sprintf("%s №%s · %s · %s", icon, d.DealNumber, d.DealDate, d.ClientName)
 		rows = append(rows, row(btn(util.TruncRunes(text, 60), fmt.Sprintf("deal:%d", d.ID))))
 	}
@@ -336,38 +338,32 @@ func dealsListKB(deals []*storage.Deal) *models.InlineKeyboardMarkup {
 	return ikb(rows...)
 }
 
-// dealCardKB2 — карточка сделки с откупкой, переделкой и отменой.
+// dealCardKB2 — карточка сделки: следующий этап, документы, откупка, действия.
 func dealCardKB2(d *storage.Deal, hasFiles bool, signed int) *models.InlineKeyboardMarkup {
 	id := d.ID
-	var rows []kbRow
+	sid := fmt.Sprint(id)
+	rows := nextStepButtons(d)
 	if hasFiles {
-		rows = append(rows, row(btn("📄 Прислать документы", fmt.Sprintf("deal_docs:%d", id))))
+		rows = append(rows, row(btn("📄 Прислать документы", "deal_docs:"+sid)))
+	}
+	if !d.Cancelled() && d.ActType == "sell" {
+		if d.BuybackID.Valid && d.BuyRate > 0 {
+			rows = append(rows, row(btn(fmt.Sprintf("🔁 Откупка №%d", d.BuybackID.Int64), fmt.Sprintf("bb:view:%d", d.BuybackID.Int64))))
+		} else {
+			rows = append(rows, row(btn("🔁 Закрыть откупкой", "dealx:bb:"+sid)))
+		}
 	}
 	if !d.Cancelled() {
-		if d.ActType == "sell" {
-			if d.BuybackID.Valid && d.BuyRate > 0 {
-				rows = append(rows, row(btn(fmt.Sprintf("🔁 Откупка №%d", d.BuybackID.Int64), fmt.Sprintf("bb:view:%d", d.BuybackID.Int64))))
-			} else {
-				rows = append(rows, row(btn("🔁 Закрыть откупкой", fmt.Sprintf("dealx:bb:%d", id))))
-			}
-		}
-		rows = append(rows, row(btn("✏️ Переделать заявку", fmt.Sprintf("dealx:edit:%d", id))))
-		label := "📎 Прикрепить подписанный"
+		label := "📎 Подписанный документ"
 		if signed > 0 {
-			label = fmt.Sprintf("📎 Прикрепить подписанный (%d)", signed)
+			label = fmt.Sprintf("📎 Подписанные (%d)", signed)
 		}
-		rows = append(rows, row(btn(label, fmt.Sprintf("deal_attach:%d", id))))
+		rows = append(rows, row(btn(label, "deal_attach:"+sid)))
 	}
 	if signed > 0 {
-		rows = append(rows, row(btn("📥 Прислать подписанные", fmt.Sprintf("deal_signed:%d", id))))
+		rows = append(rows, row(btn("📥 Прислать подписанные", "deal_signed:"+sid)))
 	}
-	if d.Cancelled() {
-		rows = append(rows, row(btn("↩️ Восстановить", fmt.Sprintf("dealx:restore:%d", id))),
-			row(btn("🗑 Удалить из журнала", fmt.Sprintf("deal_del:%d", id))))
-	} else {
-		rows = append(rows, row(btn("❌ Отменить сделку", fmt.Sprintf("dealx:cancel:%d", id))))
-	}
-	rows = append(rows, row(btn("◀️ Назад", "deals:menu")))
+	rows = append(rows, row(btn("⚙️ Ещё", "st:more:"+sid), btn("◀️ Назад", "deals:menu")))
 	return ikb(rows...)
 }
 

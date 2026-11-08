@@ -374,7 +374,7 @@ func (a *App) onMessage(c *Ctx) {
 	case navMenu:
 		a.cmdStart(c)
 		return
-	case navCreateAct:
+	case navCreateAct, navCreateOld:
 		a.startCreateAct(c)
 		return
 	case navDeals:
@@ -434,6 +434,8 @@ func (a *App) onMessage(c *Ctx) {
 		a.varsLabelInput(c, text)
 	case strings.HasPrefix(state, "bb:"):
 		a.buybackMessage(c, text)
+	case strings.HasPrefix(state, "deal:"):
+		a.stageMessage(c, text)
 	case strings.HasPrefix(state, "acc:"), strings.HasPrefix(state, "wal:"):
 		a.accountsMessage(c, text)
 	case strings.HasPrefix(state, "tr:"):
@@ -488,6 +490,8 @@ func (a *App) onCallback(c *Ctx) {
 		a.treasuryCallback(c, rest)
 	case "acc", "wal":
 		a.accountsCallback(c, head, rest)
+	case "st":
+		a.stageCallback(c, rest)
 	case "notify":
 		a.notifyCallback(c, rest)
 	case "dealx":

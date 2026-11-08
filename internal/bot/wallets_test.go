@@ -68,8 +68,6 @@ func TestMultipleAccountsInAct(t *testing.T) {
 	h.expect(h.click(fmt.Sprintf("cb:%d", tink)), "Наши реквизиты")
 	ops, _ := h.app.st.BankAccounts(ctx, storage.OwnerOperator, 0)
 	h.click(fmt.Sprintf("ob:%d", ops[len(ops)-1].ID))
-	h.click("tx:single")
-	h.click("tx:one_skip")
 	h.click("skip:commission_fiat")
 	h.click("skip:commission_va")
 	h.expect(h.click("skip:execution_date"), "Реквизиты клиента:</b> Тинькофф")

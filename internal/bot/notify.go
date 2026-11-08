@@ -21,16 +21,23 @@ import (
 func profitLines(d *storage.Deal) string {
 	r := profit.Compute(d)
 	if !r.HasBuyback {
-		return "⏳ <b>Откупка:</b> ещё не сделана — USDT выдан наперёд"
+		return noBuybackLine(d)
 	}
 	return "🔁 <b>" + escape(profit.Header(r)) + "</b>\n" + escape(strings.Join(profit.DealBlock(r), "\n"))
+}
+
+func noBuybackLine(d *storage.Deal) string {
+	if d.USDTAt != "" {
+		return "⏳ <b>Откупка:</b> ещё не сделана — USDT выдан наперёд"
+	}
+	return "⏳ <b>Откупка:</b> ещё не сделана"
 }
 
 // notifyProfitLines — как profitLines, но без строки объёма (она уже есть в шапке).
 func notifyProfitLines(d *storage.Deal) string {
 	r := profit.Compute(d)
 	if !r.HasBuyback {
-		return "⏳ <b>Откупка:</b> ещё не сделана — USDT выдан наперёд"
+		return noBuybackLine(d)
 	}
 	var block []string
 	for _, l := range profit.DealBlock(r) {
@@ -54,6 +61,8 @@ var notifyTitles = map[string]string{"sell": "📤 Продажа USDT клие�
 func dealNotifyText(d *storage.Deal) string {
 	head := "🆕 <b>Новая сделка"
 	switch {
+	case d.Completed() && !d.Cancelled():
+		head = "✅ <b>Завершена — сделка"
 	case d.Cancelled():
 		head = "❌ <b>ОТМЕНЕНА — сделка"
 	case d.Version > 1:
@@ -74,6 +83,9 @@ func dealNotifyText(d *storage.Deal) string {
 		lines = append(lines, "", notifyProfitLines(d))
 	} else {
 		lines = append(lines, "<b>Курс:</b> "+escape(d.ExchangeRate)+" ₽")
+	}
+	if !d.Cancelled() {
+		lines = append(lines, "", progressText(d))
 	}
 	if d.CreatedBy != "" {
 		lines = append(lines, "", "<i>"+escape(d.CreatedBy)+"</i>")

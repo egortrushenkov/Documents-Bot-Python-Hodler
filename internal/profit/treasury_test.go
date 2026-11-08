@@ -9,11 +9,11 @@ import (
 func TestTreasury(t *testing.T) {
 	opening := &storage.TreasuryOp{OpDate: "2026-11-01", USDT: 1000, Rub: 50000}
 	d1 := &storage.Deal{ActType: "sell", Status: "active", ExchangeRate: "81,72", FiatAmount: 170000, VAAmount: 2080.27,
-		TaxPercent: 5, FeePercent: 0.05, BuyRate: 81.40, SupplierName: "БРАЙТУМ", ReferrerName: "Дима", ReferralPercent: 20, ClientName: "А"}
+		TaxPercent: 5, FeePercent: 0.05, BuyRate: 81.40, SupplierName: "БРАЙТУМ", ReferrerName: "Дима", ReferralPercent: 20, ClientName: "А", PaidAt: "2026-11-02", USDTAt: "2026-11-02"}
 	d2 := &storage.Deal{ActType: "sell", Status: "active", ExchangeRate: "81,72", FiatAmount: 1000000, VAAmount: 12236.91,
-		TaxPercent: 5, FeePercent: 0.05, BuyRate: 81.40, SupplierName: "БРАЙТУМ", ReferrerName: "Дима", ReferralPercent: 20, ClientName: "Б"}
+		TaxPercent: 5, FeePercent: 0.05, BuyRate: 81.40, SupplierName: "БРАЙТУМ", ReferrerName: "Дима", ReferralPercent: 20, ClientName: "Б", PaidAt: "2026-11-02", USDTAt: "2026-11-02"}
 	open := &storage.Deal{ActType: "sell", Status: "active", ExchangeRate: "82", FiatAmount: 82000, VAAmount: 1000,
-		TaxPercent: 5, FeePercent: 0.05, ClientName: "В"}
+		TaxPercent: 5, FeePercent: 0.05, ClientName: "В", PaidAt: "2026-11-02", USDTAt: "2026-11-02"}
 	bb := &storage.Buyback{RubAmount: 1160000, Rate: 81.40, FeePercent: 0.05, SupplierName: "БРАЙТУМ"}
 	ops := []*storage.TreasuryOp{
 		{Kind: "withdraw", USDT: -100},
@@ -28,6 +28,12 @@ func TestTreasury(t *testing.T) {
 	}
 	if tr.OpenCount != 1 || tr.OpenUSDT != 1000 || tr.OpenRub != 82000 || tr.OpenEstimatedBuyUSD <= 0 {
 		t.Fatalf("выдано наперёд: %+v", tr)
+	}
+	// Сделка в работе: оплата не пришла, USDT не отправлен — на остатки не влияет
+	pending := &storage.Deal{ActType: "sell", Status: "active", ExchangeRate: "80", FiatAmount: 80000, VAAmount: 1000}
+	tr2 := ComputeTreasury(opening, []*storage.Deal{d1, d2, open, pending}, []*storage.Buyback{bb}, ops)
+	if tr2.USDT != tr.USDT || tr2.Rub != tr.Rub || tr2.AwaitRub != 80000 || tr2.ToSendUSDT != 1000 {
+		t.Fatalf("сделка в работе изменила остатки: %+v", tr2)
 	}
 	debts := tr.RefOwed()
 	if len(debts) != 1 || debts[0].Paid != 5 || debts[0].Accrued <= 5 {

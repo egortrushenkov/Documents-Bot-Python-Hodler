@@ -31,8 +31,11 @@ var networks = []string{"TRC-20", "ERC-20", "BEP-20", "SOL", "TON", "BTC"}
 
 // owner в callback-данных: «op» или «c12».
 func ownerCode(ownerType string, id int64) string {
-	if ownerType == storage.OwnerOperator {
+	switch ownerType {
+	case storage.OwnerOperator:
 		return "op"
+	case storage.OwnerSupplier:
+		return fmt.Sprintf("s%d", id)
 	}
 	return fmt.Sprintf("c%d", id)
 }
@@ -41,6 +44,10 @@ func parseOwner(code string) (string, int64) {
 	if code == "op" {
 		return storage.OwnerOperator, 0
 	}
+	if strings.HasPrefix(code, "s") {
+		id, _ := parseID(strings.TrimPrefix(code, "s"))
+		return storage.OwnerSupplier, id
+	}
 	id, _ := parseID(strings.TrimPrefix(code, "c"))
 	return storage.OwnerCompany, id
 }
@@ -48,6 +55,12 @@ func parseOwner(code string) (string, int64) {
 func (a *App) ownerName(c *Ctx, ownerType string, id int64) string {
 	if ownerType == storage.OwnerOperator {
 		return "наши"
+	}
+	if ownerType == storage.OwnerSupplier {
+		if sp := a.supplierByID(c, id); sp != nil {
+			return sp.Name
+		}
+		return "поставщик"
 	}
 	if co, _ := a.st.Company(c, id); co != nil {
 		return co.ShortName
@@ -58,6 +71,9 @@ func (a *App) ownerName(c *Ctx, ownerType string, id int64) string {
 func backToOwner(ownerType string, id int64) btnT {
 	if ownerType == storage.OwnerOperator {
 		return btn("◀️ К реквизитам", "menu:settings")
+	}
+	if ownerType == storage.OwnerSupplier {
+		return btn("◀️ К поставщику", fmt.Sprintf("sup:view:%d", id))
 	}
 	return btn("◀️ К компании", fmt.Sprintf("view_company:%d", id))
 }
@@ -163,6 +179,12 @@ func (a *App) counterpartyName(c context.Context, addr string) string {
 	for _, w := range ws {
 		if w.OwnerType == storage.OwnerOperator {
 			return "наш кошелёк «" + w.Label + "»"
+		}
+		if w.OwnerType == storage.OwnerSupplier {
+			if name, _ := a.st.SupplierName(c, w.OwnerID); name != "" {
+				return "поставщик " + name
+			}
+			continue
 		}
 		if co, _ := a.st.Company(c, w.OwnerID); co != nil {
 			return co.ShortName

@@ -114,6 +114,7 @@ func (a *App) showBuybacksMenu(c *Ctx) {
 		row(btn("➕ Новая откупка", "bb:new")),
 		row(btn("⏳ Сделки без откупки", "bb:open")),
 		row(btn("🕐 Последние откупки", "bb:list")),
+		row(btn("🏭 Поставщики", "sup:menu")),
 		row(btn("🏠 Главное меню", "menu:main")),
 	))
 }
@@ -322,6 +323,10 @@ func (a *App) buybackCallback(c *Ctx, rest string) {
 		}
 		if target := c.s.Data["bb_target"]; target != "" { // добавление к существующей откупке
 			a.addDealsToBuyback(c, target)
+			return
+		}
+		if c.s.Data["bb_presup"] != "" { // поставщик выбран заранее (из его карточки)
+			a.askRate(c)
 			return
 		}
 		a.askSupplier(c)

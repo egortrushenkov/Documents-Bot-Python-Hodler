@@ -434,6 +434,8 @@ func (a *App) onMessage(c *Ctx) {
 		a.varsLabelInput(c, text)
 	case strings.HasPrefix(state, "bb:"):
 		a.buybackMessage(c, text)
+	case strings.HasPrefix(state, "sup:"):
+		a.suppliersMessage(c, text)
 	case strings.HasPrefix(state, "deal:"):
 		a.stageMessage(c, text)
 	case strings.HasPrefix(state, "acc:"), strings.HasPrefix(state, "wal:"):
@@ -492,6 +494,8 @@ func (a *App) onCallback(c *Ctx) {
 		a.accountsCallback(c, head, rest)
 	case "st":
 		a.stageCallback(c, rest)
+	case "sup":
+		a.suppliersCallback(c, rest)
 	case "notify":
 		a.notifyCallback(c, rest)
 	case "dealx":

@@ -179,9 +179,45 @@ func (s *Store) SupplierName(ctx context.Context, id int64) (string, error) {
 	return string(n), err
 }
 
+// DeleteSupplier удаляет поставщика; в откупках имя остаётся (снимок).
 func (s *Store) DeleteSupplier(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM suppliers WHERE id=?", id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		"UPDATE buybacks SET supplier_id=NULL WHERE supplier_id=?",
+		"DELETE FROM bank_accounts WHERE owner_type='supplier' AND owner_id=?",
+		"DELETE FROM wallets WHERE owner_type='supplier' AND owner_id=?",
+		"DELETE FROM suppliers WHERE id=?",
+	} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// RenameSupplier — новое имя и в карточке, и во всех его откупках.
+func (s *Store) RenameSupplier(ctx context.Context, id int64, name string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "UPDATE suppliers SET name=? WHERE id=?", strings.TrimSpace(name), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE buybacks SET supplier_name=? WHERE supplier_id=?", strings.TrimSpace(name), id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SupplierBuybacks — активные откупки поставщика (по id или, для старых, по имени).
+func (s *Store) SupplierBuybacks(ctx context.Context, id int64, name string) ([]*Buyback, error) {
+	return s.queryBuybacks(ctx, "WHERE status='active' AND (supplier_id=? OR (supplier_id IS NULL AND supplier_name=?)) ORDER BY id DESC", id, name)
 }
 
 // ─── Откупки ──────────────────────────────────────────────────────────────────

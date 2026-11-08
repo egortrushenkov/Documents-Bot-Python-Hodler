@@ -11,6 +11,7 @@ import (
 const (
 	OwnerCompany  = "company"
 	OwnerOperator = "operator"
+	OwnerSupplier = "supplier"
 )
 
 type BankAccount struct {
@@ -177,6 +178,9 @@ func (s *Store) syncDefaultBank(ctx context.Context, b *BankAccount) error {
 		}
 		return nil
 	}
+	if b.OwnerType != OwnerCompany { // у поставщиков «старых» полей нет
+		return nil
+	}
 	_, err := s.db.ExecContext(ctx, "UPDATE companies SET bank_name=?, bank_account=?, bank_bik=? WHERE id=?",
 		b.BankName, b.Account, b.BIK, b.OwnerID)
 	return err
@@ -322,6 +326,9 @@ func (s *Store) SetDefaultWallet(ctx context.Context, id int64) error {
 func (s *Store) syncDefaultWallet(ctx context.Context, w *Wallet) error {
 	if w.OwnerType == OwnerOperator {
 		return s.SetSetting(ctx, "wallet", w.Address)
+	}
+	if w.OwnerType != OwnerCompany {
+		return nil
 	}
 	_, err := s.db.ExecContext(ctx, "UPDATE companies SET wallet=? WHERE id=?", w.Address, w.OwnerID)
 	return err

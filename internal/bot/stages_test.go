@@ -81,3 +81,37 @@ func TestDealStagesBuyAndUndo(t *testing.T) {
 		t.Fatal("завершённая сделка осталась в работе")
 	}
 }
+
+func TestCancelShowsTreasuryAndBuyback(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.addCompany("Ромашка")
+	h.click("tr:opening")
+	h.text("1000")
+	h.text("50000")
+	h.click("tr:openday")
+	h.sellDeal("1", "1", "100", "8000")
+	h.click("bb:new")
+	h.click("bb:t:1")
+	h.click("bb:next")
+	h.text("БРАЙТУМ")
+	h.text("79")
+	h.text("7900")
+	h.click("bb:save")
+
+	// Предупреждение об откупке и вариант «вместе с откупкой»
+	c := h.click("dealx:cancel:1")
+	h.expect(c, "закрыта откупкой №1")
+	h.expect(c, "dealx:cancelboth:1")
+	c = h.click("dealx:cancelboth:1")
+	h.expect(c, "💰 Остатки: USDT")
+	tr, _ := h.app.treasury(&Ctx{Context: ctx, app: h.app})
+	if tr.USDT != 1000 || tr.Rub != 50000 {
+		t.Fatalf("остатки не вернулись: %v USDT, %v ₽", tr.USDT, tr.Rub)
+	}
+	if b, _ := h.app.st.Buyback(ctx, 1); !b.Cancelled() {
+		t.Fatal("откупка не отменена")
+	}
+	// Восстановление сделки — остатки снова меняются, видно дельту
+	h.expect(h.click("dealx:restore:1"), "→")
+}

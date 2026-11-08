@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -422,11 +423,27 @@ func (a *App) dealExtraCallback(c *Ctx, rest string) {
 	case "edit":
 		a.startDealEdit(c, d)
 	case "cancel":
-		c.EditPlain(fmt.Sprintf("⚠️ Отменить сделку №%s (%s)?\n\nОна останется в журнале с пометкой «отменена», "+
-			"но пропадёт из отчётов. Руководители получат уведомление. Восстановить можно в любой момент.",
-			d.DealNumber, d.ClientName), ikb(row(
-			btn("✅ Да, отменить", "dealx:cancelyes:"+idStr), btn("❌ Нет", "deal:"+idStr))))
-	case "cancelyes", "restore":
+		text := fmt.Sprintf("⚠️ Отменить сделку №%s (%s)?\n\nОна останется в журнале с пометкой «отменена», "+
+			"но пропадёт из отчётов и остатков. Руководители получат уведомление. Восстановить можно в любой момент.",
+			d.DealNumber, d.ClientName)
+		rows := []kbRow{}
+		if d.BuybackID.Valid && d.BuyRate > 0 { // сделка закрыта активной откупкой
+			others, _ := a.st.DealsOfBuyback(c, d.BuybackID.Int64)
+			text += fmt.Sprintf("\n\n🔁 Сделка закрыта откупкой №%d. Если отменить только сделку, откупка останется: "+
+				"купленные USDT и переведённые поставщику ₽ по-прежнему будут в остатках.", d.BuybackID.Int64)
+			if len(others) <= 1 {
+				rows = append(rows, row(btn("✅ Отменить сделку и откупку", "dealx:cancelboth:"+idStr)))
+			} else {
+				text += fmt.Sprintf(" В этой откупке ещё %d сд. — её можно поправить в карточке откупки.", len(others)-1)
+			}
+			rows = append(rows, row(btn("✅ Отменить только сделку", "dealx:cancelyes:"+idStr)))
+		} else {
+			rows = append(rows, row(btn("✅ Да, отменить", "dealx:cancelyes:"+idStr)))
+		}
+		rows = append(rows, row(btn("❌ Нет", "deal:"+idStr)))
+		c.EditPlain(text, ikb(rows...))
+	case "cancelyes", "restore", "cancelboth":
+		before, _ := a.treasury(c)
 		status, msg := "cancelled", "❌ Сделка №%s отменена"
 		if action == "restore" {
 			status, msg = "active", "↩️ Сделка №%s восстановлена"
@@ -435,11 +452,20 @@ func (a *App) dealExtraCallback(c *Ctx, rest string) {
 			c.fail(err)
 			return
 		}
-		a.refreshDealNotify(id, fmt.Sprintf(msg, escape(d.DealNumber))+by(c.userName))
-		if d.BuybackID.Valid { // баланс откупки изменился
+		if action == "cancelboth" && d.BuybackID.Valid {
+			bbID := d.BuybackID.Int64
+			if err := a.st.SetBuybackStatus(c, bbID, "cancelled"); err != nil {
+				c.fail(err)
+				return
+			}
+			msg = "❌ Сделка №%s отменена вместе с откупкой"
+			a.refreshBuybackNotify(bbID, fmt.Sprintf("❌ Откупка №%d отменена вместе со сделкой №%s%s", bbID, escape(d.DealNumber), by(c.userName)))
+		} else if d.BuybackID.Valid { // баланс откупки изменился
 			a.refreshBuybackNotify(d.BuybackID.Int64, "")
 		}
-		a.showDealCard(c, id)
+		a.refreshDealNotify(id, fmt.Sprintf(msg, escape(d.DealNumber))+by(c.userName))
+		after, _ := a.treasury(c)
+		a.showDealCardMsg(c, id, treasuryDelta(before, after, d)+"\n\n")
 	case "bb":
 		var rows []kbRow
 		rows = append(rows, row(btn("➕ Новая откупка для этой сделки", "dealx:bbnew:"+idStr)))
@@ -504,4 +530,21 @@ func (a *App) startDealEdit(c *Ctx, d *storage.Deal) {
 	c.s.Clear()
 	c.s.Act = &docgen.Draft{Fields: fields, Txs: txs}
 	a.showConfirm(c)
+}
+
+// treasuryDelta — как изменились остатки после отмены/восстановления.
+func treasuryDelta(before, after profit.Treasury, d *storage.Deal) string {
+	du, dr := after.USDT-before.USDT, after.Rub-before.Rub
+	if math.Abs(du) < 0.005 && math.Abs(dr) < 0.005 {
+		switch {
+		case before.FromISO != "" && d.DealDateISO != "" && d.DealDateISO < before.FromISO:
+			return fmt.Sprintf("💰 Остатки не изменились: сделка от %s — раньше начала учёта остатков (%s).",
+				escape(d.DealDate), isoToRU(before.FromISO))
+		case d.PaidAt == "" && d.USDTAt == "":
+			return "💰 Остатки не изменились: по сделке ещё не было оплаты и выплаты USDT."
+		}
+		return "💰 Остатки не изменились."
+	}
+	return fmt.Sprintf("💰 Остатки: USDT %s → %s (%s) · ₽ %s → %s (%s)",
+		util.RU(before.USDT, 2), util.RU(after.USDT, 2), signed(du, ""), util.RU(before.Rub, 2), util.RU(after.Rub, 2), signed(dr, ""))
 }

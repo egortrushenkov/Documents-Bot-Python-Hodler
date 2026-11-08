@@ -125,8 +125,10 @@ func (a *App) handle(ctx context.Context, _ *tg.Bot, upd *models.Update) {
 	case upd.Message != nil && upd.Message.From != nil:
 		chatID, userID = upd.Message.Chat.ID, upd.Message.From.ID
 		c = &Ctx{msg: upd.Message, chatType: upd.Message.Chat.Type, userName: displayName(upd.Message.From)}
-		if upd.Message.IsTopicMessage {
-			c.thread = upd.Message.MessageThreadID
+		// Ветка форума: берём номер, если сообщение из темы или чат — форум
+		// (в некоторых клиентах is_topic_message не приходит)
+		if m := upd.Message; m.MessageThreadID != 0 && (m.IsTopicMessage || m.Chat.IsForum) {
+			c.thread = m.MessageThreadID
 		}
 	case upd.CallbackQuery != nil:
 		userID = upd.CallbackQuery.From.ID

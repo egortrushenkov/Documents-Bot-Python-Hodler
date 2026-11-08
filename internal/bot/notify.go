@@ -291,6 +291,8 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 	fields := strings.Fields(text)
 	cmd := strings.SplitN(fields[0], "@", 2)[0]
 	bound, _ := a.st.IsNotifyChat(c, c.chatID)
+	slog.Info("команда в группе", "cmd", cmd, "chat", c.chatID, "thread", c.thread,
+		"msg_thread", c.msg.MessageThreadID, "is_topic", c.msg.IsTopicMessage, "is_forum", c.msg.Chat.IsForum, "admin", isAdmin)
 	switch cmd {
 	case "/bind":
 		if !isAdmin {
@@ -348,9 +350,15 @@ func (a *App) onGroupMessage(c *Ctx, isAdmin bool) {
 		if s["wallet_notify_groups"] == "1" {
 			walletLine = name(ch.Thread("wallet"))
 		}
+		here := "общая ветка / чат без веток"
+		if c.thread != 0 {
+			here = fmt.Sprintf("ветка №%d", c.thread)
+		}
+		diag := fmt.Sprintf("\n\n<i>Эта команда пришла из: %s (thread=%d, topic=%v, forum=%v)</i>",
+			here, c.msg.MessageThreadID, c.msg.IsTopicMessage, c.msg.Chat.IsForum)
 		c.Send(fmt.Sprintf("🔔 <b>Уведомления этого чата</b>\nСделки и откупки: %s\nКошельки: %s\nФинансы: %s\n\n"+
 			"Сменить: напишите в нужной ветке /bind, /bind кошельки или /bind финансы.",
-			name(ch.Thread("deal")), walletLine, name(ch.Thread("treasury"))), nil)
+			name(ch.Thread("deal")), walletLine, name(ch.Thread("treasury")))+diag, nil)
 	case "/unbind":
 		if !isAdmin {
 			return

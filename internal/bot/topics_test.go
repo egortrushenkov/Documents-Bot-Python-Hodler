@@ -92,3 +92,16 @@ func TestForumTopics(t *testing.T) {
 		t.Fatalf("/balance не в ветке 13: %+v", c)
 	}
 }
+
+// Сообщение из темы без флага is_topic_message (так бывает в некоторых клиентах)
+func TestForumTopicWithoutFlag(t *testing.T) {
+	h := newHarness(t)
+	h.app.handle(context.Background(), nil, &models.Update{Message: &models.Message{
+		ID: 7, Text: "/bind", MessageThreadID: 55,
+		Chat: models.Chat{ID: -100, Type: models.ChatTypeSupergroup, Title: "Руководство", IsForum: true},
+		From: &models.User{ID: 1, FirstName: "Админ"}}})
+	ch, _ := h.app.st.NotifyChat(context.Background(), -100)
+	if ch == nil || ch.ThreadID != 55 {
+		t.Fatalf("ветка не сохранена: %+v", ch)
+	}
+}

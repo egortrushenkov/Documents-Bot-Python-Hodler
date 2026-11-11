@@ -468,6 +468,8 @@ func (a *App) onCallback(c *Ctx) {
 			c.Edit(welcomeText, mainMenuKB())
 		case "create_act":
 			a.startCreateAct(c)
+		case "standalone":
+			a.startStandalone(c)
 		case "companies":
 			c.s.Clear()
 			a.showCompanies(c)

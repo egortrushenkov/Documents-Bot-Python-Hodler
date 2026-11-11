@@ -293,21 +293,7 @@ func (a *App) makeDoc(c *Ctx, deal *storage.Deal, kind string) error {
 		c.fail(err)
 		return err
 	}
-	custom, _ := a.st.CompanyCustom(c, client.ID)
-	clientMap, opMap := client.Map(), map[string]string{}
-	for k, v := range op {
-		opMap[k] = v
-	}
-	if deal.ClientBankID.Valid {
-		if b, _ := a.st.BankAccount(c, deal.ClientBankID.Int64); b != nil {
-			clientMap["bank_name"], clientMap["bank_account"], clientMap["bank_bik"] = b.BankName, b.Account, b.BIK
-		}
-	}
-	if deal.OperatorBankID.Valid {
-		if b, _ := a.st.BankAccount(c, deal.OperatorBankID.Int64); b != nil {
-			opMap["bank_name"], opMap["bank_account"], opMap["bank_bik"] = b.BankName, b.Account, b.BIK
-		}
-	}
+	opMap, clientMap, custom := a.docMaps(c, op, client, deal.ClientBankID, deal.OperatorBankID)
 	word := "Акт"
 	if kind == "invoice" {
 		word = "Счёт на оплату"
@@ -541,6 +527,10 @@ func (a *App) savePaid(c *Ctx, d *storage.Deal, dateISO string) {
 
 // afterTxs — транзакции введены на этапе выплаты USDT → дата.
 func (a *App) afterTxs(c *Ctx) {
+	if c.act().Get("standalone") != "" { // документ без сделки — дальше комиссия и подтверждение
+		a.askCommission(c)
+		return
+	}
 	sid := c.act().Get("stage_deal")
 	a.askStageDate(c, stDealUSDTDate, "st:usdttoday:"+sid)
 }
@@ -645,4 +635,101 @@ func (a *App) showDealCardMsg(c *Ctx, id int64, prefix string) {
 	}
 	signed, _ := a.st.CountSignedDocs(c, id)
 	c.Send(prefix+dealCardText(d, signed), dealCardKB2(d, d.DocxFileID != "" || d.InvoiceDocxFileID != "", signed))
+}
+
+// docMaps — реквизиты оператора и клиента для шаблона с учётом выбранных счетов.
+func (a *App) docMaps(c *Ctx, op map[string]string, client *storage.Company, clBank, opBank sql.NullInt64) (
+	opMap, clientMap, custom map[string]string) {
+	custom, _ = a.st.CompanyCustom(c, client.ID)
+	clientMap, opMap = client.Map(), map[string]string{}
+	for k, v := range op {
+		opMap[k] = v
+	}
+	if clBank.Valid {
+		if b, _ := a.st.BankAccount(c, clBank.Int64); b != nil {
+			clientMap["bank_name"], clientMap["bank_account"], clientMap["bank_bik"] = b.BankName, b.Account, b.BIK
+		}
+	}
+	if opBank.Valid {
+		if b, _ := a.st.BankAccount(c, opBank.Int64); b != nil {
+			opMap["bank_name"], opMap["bank_account"], opMap["bank_bik"] = b.BankName, b.Account, b.BIK
+		}
+	}
+	return opMap, clientMap, custom
+}
+
+// ─── Документ без сделки ──────────────────────────────────────────────────────
+
+func (a *App) startStandalone(c *Ctx) {
+	c.s.Clear()
+	c.s.State = stActSelectType
+	c.act().Fields["standalone"] = "1"
+	c.Reply("📄 <b>Документ без сделки</b>\n\nСформировать акт или счёт по данным, которые вы введёте. "+
+		"В журнал сделок, остатки, отчёты и уведомления руководителям он <b>не попадёт</b>, нумерация не сдвинется.\n\n"+
+		"Что сформировать?", standaloneTypeKB())
+}
+
+// generateStandalone — сформировать и отправить документ, ничего не сохраняя.
+func (a *App) generateStandalone(c *Ctx) {
+	d := c.act()
+	companyID, _ := parseID(d.Get("company_id"))
+	client, err := a.st.Company(c, companyID)
+	if err != nil || client == nil {
+		c.Send("❌ Компания не найдена — начните заново.", backToMainKB())
+		return
+	}
+	op, err := a.st.Settings(c)
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	var clBank, opBank sql.NullInt64
+	if id, ok := parseID(d.Get("cl_bank_id")); ok {
+		clBank = sql.NullInt64{Int64: id, Valid: true}
+	}
+	if id, ok := parseID(d.Get("op_bank_id")); ok {
+		opBank = sql.NullInt64{Int64: id, Valid: true}
+	}
+	opMap, clientMap, custom := a.docMaps(c, op, client, clBank, opBank)
+	c.Answer("⏳ Формирую документ...", false)
+	status := c.SendPlain("⏳ Создаю DOCX...", nil)
+	dropStatus := func() {
+		if status != nil {
+			c.Delete(status.ID)
+			status = nil
+		}
+	}
+	defer dropStatus()
+	docxPath, err := docgen.Generate(a.cfg.TemplatesDir, a.cfg.OutputDir, d, opMap, clientMap, custom)
+	if err != nil {
+		if errors.Is(err, docgen.ErrTemplateNotFound) {
+			c.Send("❌ <b>Шаблон не найден</b>\n\nЗагрузите его через меню 📄 Шаблоны.\n\nДетали: "+escape(err.Error()), nil)
+		} else {
+			c.Send("❌ <b>Ошибка генерации</b>\n<code>"+escape(err.Error())+"</code>", nil)
+		}
+		return
+	}
+	pdfPath, pdfErr := a.pdf.Convert(c, docxPath)
+	if pdfErr != nil {
+		pdfPath = ""
+	}
+	defer cleanup.TryRemove(docxPath, pdfPath)
+
+	word := map[string]string{"sell": "Акт", "buy": "Акт", "invoice": "Счёт на оплату"}[d.Get("act_type")]
+	caption := fmt.Sprintf("📄 <b>%s №%s от %s</b>\n%s\nКлиент: %s\n<i>Без сохранения в журнал</i>", word,
+		escape(d.Get("deal_number")), escape(d.Get("deal_date")), directionLabels[d.Get("act_type")], escape(client.ShortName))
+	if _, err := c.SendFile(docxPath, filepath.Base(docxPath), caption+"\n📄 DOCX", true); err != nil {
+		c.Send("❌ Не удалось отправить документ: <code>"+escape(err.Error())+"</code>", nil)
+		return
+	}
+	if pdfErr == nil {
+		_, _ = c.SendFile(pdfPath, filepath.Base(pdfPath), caption+"\n📑 PDF", true)
+	} else {
+		c.Send("⚠️ PDF не создан:\n<code>"+escape(pdfErr.Error())+"</code>", nil)
+	}
+	dropStatus()
+	c.s.Clear()
+	c.SendPlain("✅ Готово. Документ не сохранён в журнал.", ikb(
+		row(btn("📄 Ещё документ без сделки", "menu:standalone")),
+		row(btn("🏠 Главное меню", "menu:main"))))
 }

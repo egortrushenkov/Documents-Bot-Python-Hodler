@@ -276,7 +276,9 @@ func (a *App) actCallback(c *Ctx, head, rest string) {
 		c.Edit("✏️ <b>"+escape(label)+"</b>\n\nТекущее: <code>"+escape(c.act().Get(rest))+
 			"</code>\n\nВведите новое значение:", nil)
 	case head == "act" && rest == "generate" && st == stActConfirm:
-		if c.act().Get("editing_deal_id") != "" {
+		if c.act().Get("standalone") != "" {
+			a.generateStandalone(c)
+		} else if c.act().Get("editing_deal_id") != "" {
 			a.saveDealEdit(c)
 		} else {
 			a.createDeal(c)
@@ -407,7 +409,8 @@ func (a *App) actMessage(c *Ctx, text string) {
 // ─── Шаги ─────────────────────────────────────────────────────────────────────
 
 func (a *App) stepType(c *Ctx, actType string) {
-	if actType != "sell" && actType != "buy" {
+	standalone := c.act().Get("standalone") != ""
+	if actType != "sell" && actType != "buy" && !(standalone && actType == "invoice") {
 		return
 	}
 	c.act().Fields["act_type"] = actType
@@ -650,7 +653,18 @@ func (a *App) askOperatorBank(c *Ctx) {
 }
 
 // afterBanks: транзакции USDT вводятся позже, на этапе выплаты.
-func (a *App) afterBanks(c *Ctx) { a.askCommission(c) }
+func (a *App) afterBanks(c *Ctx) {
+	d := c.act()
+	// Документ без сделки: транзакции акта вводятся сразу (как раньше)
+	if d.Get("standalone") != "" && d.Get("act_type") != "invoice" {
+		c.s.State = stActSplitMode
+		c.Reply(fmt.Sprintf("<b>Шаг: Транзакции</b>\nОбщая сумма: <b>%s %s</b>\n\n"+
+			"Перевод одной транзакцией или разбить на части (например тест + остаток)?",
+			escape(d.GetOr("va_amount", "—")), escape(d.Get("va_type"))), splitModeKB())
+		return
+	}
+	a.askCommission(c)
+}
 
 // finishSingle: одна транзакция = вся сумма; хэш — в основном поле (для правок) и списком.
 func (a *App) finishSingle(c *Ctx, hash string) {
@@ -747,6 +761,10 @@ func (a *App) showConfirm(c *Ctx) {
 	if d.Get("editing_deal_id") != "" {
 		prefix = "✏️ <b>Изменение сделки</b> — поправьте поля и сохраните. Уже сформированные счёт и акт пересоздадутся.\n\n"
 		kb = confirmEditKB()
+	}
+	if d.Get("standalone") != "" {
+		prefix = "📄 <b>Документ без сделки</b> — в журнал, остатки и отчёты не попадёт.\n\n"
+		kb = confirmStandaloneKB()
 	}
 	extra := ""
 	if bid, ok := parseID(d.Get("cl_bank_id")); ok {

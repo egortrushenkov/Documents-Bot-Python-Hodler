@@ -72,6 +72,7 @@ func mainMenuKB() *models.InlineKeyboardMarkup {
 		row(btn("📈 Прибыль", "profit:menu"), btn("💰 Остатки", "tr:menu")),
 		row(btn("📊 Отчёт ФН", "report:menu")),
 		row(btn("👥 Рефералы", "ref:menu"), btn("🔔 Уведомления", "notify:menu")),
+		row(btn("📄 Документ без сделки", "menu:standalone")),
 		row(btn("📄 Шаблоны", "tpl:menu"), btn("⚙️ Реквизиты", "menu:settings")),
 	)
 }
@@ -237,6 +238,23 @@ func confirmActKB() *models.InlineKeyboardMarkup {
 	return ikb(
 		row(btn("✅ Создать сделку", "act:generate")),
 		row(btn("✏️ Редактировать поля", "act:edit_menu")),
+		row(btn("❌ Отмена", "menu:main")),
+	)
+}
+
+func confirmStandaloneKB() *models.InlineKeyboardMarkup {
+	return ikb(
+		row(btn("📄 Сформировать документ", "act:generate")),
+		row(btn("✏️ Редактировать поля", "act:edit_menu")),
+		row(btn("❌ Отмена", "menu:main")),
+	)
+}
+
+func standaloneTypeKB() *models.InlineKeyboardMarkup {
+	return ikb(
+		row(btn("📤 Акт: продаём ВА клиенту", "act_type:sell")),
+		row(btn("📥 Акт: покупаем ВА у клиента", "act_type:buy")),
+		row(btn("🧾 Счёт на оплату", "act_type:invoice")),
 		row(btn("❌ Отмена", "menu:main")),
 	)
 }
